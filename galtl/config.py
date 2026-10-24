@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "settle_ms": 200,          # 同一句要「静止」这么久才翻，挡住打字机/淡入的中间帧             # 需要几次一致的画面才翻译（2 = 看一眼确认，防半帧闪现）
     "upscale": 2.0,                # OCR 前放大倍数
     "binarize": False,             # Otsu 二值化（花屏/低对比时可开）
+    "punct_fallback": True,      # OCR 读不出字但有「一串点」时，当成省略号
     "min_ratio": 0.35,             # 日文字符占比阈值，低于此视作 UI 噪声
     # ---- 延迟（两段式）----
     "stream_translate": True,      # 译文边生成边显示（首字通常 0.3~0.8s 就出来）

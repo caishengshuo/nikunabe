@@ -74,6 +74,49 @@ for text, want in [
     got = T.strip_nameplate(text)
     check(f"strip_nameplate({text!r}) -> {got!r}", got == want)
 
+
+print("[6] OCR 全空 + 画面是「一串点」→ 当成省略号")
+from PIL import Image, ImageDraw
+import galtl.inkprobe as inkprobe
+
+img = Image.new("L", (300, 60), 18)
+d = ImageDraw.Draw(img)
+for i in range(6):
+    d.ellipse((40 + i * 24, 36, 50 + i * 24, 46), fill=235)
+buf = io.BytesIO(); img.save(buf, format="PNG")
+png = buf.getvalue()
+check("inkprobe 认出点", inkprobe.dots_like(png), str(inkprobe.analyze(png)))
+
+eng2 = Engine(cfg, Store(":memory:"), queue.Queue())
+eng2.cfg.set("mode", "ocr"); eng2.cfg.set("punct_fallback", True)
+eng2.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()   # OCR 一个都不认识
+eng2.effective_scale = lambda w, h: 1.0
+eng2._capture_region = lambda: (0, 0, 300, 60)
+import galtl.pipeline as _pl
+_pl.winapi.grab_png = lambda *a, **k: (png, 300, 60)
+text, got_png, ms = eng2.grab_text()
+check("空 OCR 被兜底成省略号", text == "……", repr(text))
+check("字高被估出来", eng2._glyph_px > 0, str(eng2._glyph_px))
+res2 = eng2.translate(text)
+check("直通结果 engine=punct", (res2.get("meta") or {}).get("engine") == "punct", str(res2.get("meta")))
+eng2.close()
+
+# 反例：一张「大段文字」的图不该被兜底
+img2 = Image.new("L", (300, 60), 18)
+d2 = ImageDraw.Draw(img2)
+for i in range(9):
+    d2.rectangle((16 + i * 30, 10, 38 + i * 30, 52), fill=235)
+buf2 = io.BytesIO(); img2.save(buf2, format="PNG")
+eng3 = Engine(cfg, Store(":memory:"), queue.Queue())
+eng3.cfg.set("mode", "ocr"); eng3.cfg.set("punct_fallback", True)
+eng3.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()
+eng3.effective_scale = lambda w, h: 1.0
+eng3._capture_region = lambda: (0, 0, 300, 60)
+_pl.winapi.grab_png = lambda *a, **k: (buf2.getvalue(), 300, 60)
+text3, _, _ = eng3.grab_text()
+check("有字的图不当标点", text3 == "", repr(text3))
+eng3.close()
+
 eng.close(); store.close()
 print()
 print("失败项：", fails if fails else "无")

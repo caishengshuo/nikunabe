@@ -17,7 +17,7 @@ import threading
 import time
 
 from . import grammar as grammar_mod
-from . import llm, vocab as vocab_mod, winapi
+from . import inkprobe, llm, vocab as vocab_mod, winapi
 from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
@@ -225,6 +225,18 @@ class Engine:
         lines = self.ocr().recognize_png(png)
         merged = merge_lines(lines)
         text = strip_nameplate(normalize(display_join(merged)))
+        if not text and bool(self.cfg.get("punct_fallback", True)) and png:
+            # Windows OCR 对孤立的「………」一个字符都不给。这时看墨迹形状：
+            # 一串大小相近、垂直居中的小点，就按省略号处理，别让画面空着。
+            probe = inkprobe.analyze(png)
+            if probe.get("ok"):
+                text = "……"
+                try:
+                    ratio = float(probe.get("glyph_ratio") or 0.0)
+                    if ratio > 0:
+                        self._glyph_px = max(6.0, ratio * h)
+                except Exception:
+                    pass
         # 原文字号：OCR 给的是放大后的像素，除回去就是屏幕上真实的字高。
         # 覆盖原文要按这个字号画中文，否则一眼就能看出「块不一样大」。
         try:
