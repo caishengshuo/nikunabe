@@ -700,11 +700,16 @@ class Engine:
         return result
 
     def _confirm(self, seen: tuple, need: int) -> dict | None:
-        """又看见同一颗文本一次：够了就翻译，不够就等下轮。"""
-        key, text, png, hits = seen
+        """又看见同一颗文本一次：次数够、并且「停下够久」才翻译。
+
+        只数次数不够：galgame 的打字机效果每帧多出一两个字，连续两次读到同一句话
+        也可能只是恰好卡在同一帧上。真正稳定的台词，像素也要静一会儿。
+        """
+        key, text, png, hits, t0 = seen
         hits += 1
-        if hits < need:
-            self._seen = (key, text, png, hits)
+        settle = float(self.cfg.get("settle_ms", 200) or 0) / 1000.0
+        if hits < need or (time.time() - t0) < settle:
+            self._seen = (key, text, png, hits, t0)
             self._next_delay = 0.08
             return None
         return self._finish_tick(text, png, key)
@@ -789,10 +794,16 @@ class Engine:
                 return self._finish_tick(jp_text, png, key)
             return self._confirm(seen, need)
 
+        # 打字机效果：新一处读到的是「更长的同一句」——这时绝不能翻，等它打完。
+        if seen and len(key) > len(seen[0]) and similar_key(key, seen[0], threshold=0.5):
+            self._seen = (key, jp_text, png, 1, time.time())
+            self._next_delay = 0.10
+            return None
+
         # 第一次看到这颗文本
         if force or need <= 1:
             return self._finish_tick(jp_text, png, key)
-        self._seen = (key, jp_text, png, 1)
+        self._seen = (key, jp_text, png, 1, time.time())
         self._next_delay = 0.10       # 很快再看一眼确认，别让用户等一个完整轮询
         return None
 

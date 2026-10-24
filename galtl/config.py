@@ -17,7 +17,8 @@ DEFAULTS: dict[str, Any] = {
     "region": [0, 0, 0, 0],        # 屏幕坐标 x, y, w, h
     "poll_ms": 250,                # 空闲轮询间隔（画面不动时只做廉价指纹比对）
     "use_probe": True,             # 先用 12% 缩略图指纹判断「画面变了没」，变了才 OCR
-    "stable_reads": 2,             # 需要几次一致的画面才翻译（2 = 看一眼确认，防半帧闪现）
+    "stable_reads": 2,
+    "settle_ms": 200,          # 同一句要「静止」这么久才翻，挡住打字机/淡入的中间帧             # 需要几次一致的画面才翻译（2 = 看一眼确认，防半帧闪现）
     "upscale": 2.0,                # OCR 前放大倍数
     "binarize": False,             # Otsu 二值化（花屏/低对比时可开）
     "min_ratio": 0.35,             # 日文字符占比阈值，低于此视作 UI 噪声

@@ -57,6 +57,7 @@ class MainWindow:
         # 覆盖原文：把中文直接盖在游戏原文上（系统级截图排除，见 ui_cover 模块注释）
         self.cover = CoverWindow(self.root, cfg)
         self.engine.cover = self.cover
+        self._last_zh = ""          # 最近一次译文：换区域/开关覆盖时用来立刻重画
         self.cover.set_rect(self.cfg.region)
         if self.cfg.get("cover_mode"):
             self.overlay.hide_window()   # 覆盖模式下默认收起底部字幕条，画面干净
@@ -275,6 +276,8 @@ class MainWindow:
             self.cfg.save()
             self.lbl_region.configure(text=self._region_text())
             self.cover.set_rect(self.cfg.region)
+            if self.cover.visible and self._last_zh:
+                self.cover.show(self._last_zh)
             moved = self.overlay.avoid_rect(rect)
             hint = self._region_advice(rect)
             self.set_status(hint or f"区域已设置 {rect}")
@@ -354,7 +357,9 @@ class MainWindow:
         self.var_cover.set(on)
         if on:
             self.overlay.hide_window()
-            if getattr(self.cover, "excluded", False):
+            if not self.cfg.region:
+                self.set_status("覆盖原文：开 —— 但还没框选。按 F7 框住对话框文字区（覆盖层要贴着它）")
+            elif getattr(self.cover, "excluded", False):
                 self.set_status("覆盖原文：开（译文盖住日文，日文仍能被读取，不影响自动翻译）")
             else:
                 self.set_status("覆盖原文：开（本机不支持截图排除，取样瞬间会闪一下）")
@@ -497,7 +502,8 @@ class MainWindow:
             self.set_status("这一帧不像台词，已跳过")
             return
         self.overlay.show(res)
-        self.cover.show(res.get("zh") or "")
+        self._last_zh = res.get("zh") or ""
+        self.cover.show(self._last_zh)
         # 语法讲解是异步补上的：同一句要「替换」上一块，不能又追加一遍
         jp = (res.get("jp") or res.get("jp_ocr") or "").strip()
         replace = bool(res.get("enrich")) and jp == getattr(self, "_last_block_jp", None)
