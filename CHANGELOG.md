@@ -1,5 +1,16 @@
 # 变更记录
 
+## 1.0.16 — 修 CI：numpy 变成可选依赖
+
+- 1.0.14 引入的 `galtl/inkprobe.py` 在模块顶层 `import numpy`，而 CI 只装
+  `pyinstaller pillow`，于是 `ci_selfcheck` 一导入 `galtl.pipeline` 就炸，
+  构建直接失败（run 40144030319 第 5 步）。
+- 现在 numpy 是**可选**依赖：没有它时墨迹判定返回 `no-numpy`，程序照常启动；
+  `winapi` 本来就有纯 Python 的回退路径。
+- 新增 `requirements.txt`（pillow、numpy），CI 安装步骤改成
+  `pip install pyinstaller -r requirements.txt`，打出来的 exe 带上 numpy，
+  缩放与标点兜底都走快路径。
+
 ## 1.0.15 — 退出/关窗时不再抛 TclError
 
 - 悬浮窗与覆盖层加了 `_dead` 标记：销毁之后不再碰 Tk 控件。

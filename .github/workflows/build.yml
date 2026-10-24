@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安装打包依赖
-        run: python -m pip install --upgrade pip pyinstaller pillow
+        run: python -m pip install --upgrade pip pyinstaller -r requirements.txt
 
       # 只验能离线验的东西：导入、语法库、生词库、配置默认值。
       # 真实 OCR 需要日语语言包、翻译需要 API Key，都在 CI 里跳过。

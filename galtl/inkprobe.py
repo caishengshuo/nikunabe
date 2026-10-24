@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import io
 
-import numpy as np
 from PIL import Image
 
+try:                       # numpy 只用来算墨迹几何；没装也不能拖垮整个程序
+    import numpy as np
+except Exception:          # pragma: no cover - 只在极简环境里走到
+    np = None
 
-def _load_gray(png: bytes, max_width: int = 480) -> np.ndarray | None:
+
+def _load_gray(png: bytes, max_width: int = 480):
     try:
         im = Image.open(io.BytesIO(png)).convert("L")
     except Exception:
@@ -34,6 +38,9 @@ def _load_gray(png: bytes, max_width: int = 480) -> np.ndarray | None:
 def analyze(png: bytes) -> dict:
     """返回 {'ok', 'dots', 'glyph_ratio', 'reason'}。glyph_ratio 是小块高度占画面高的比例。"""
     out = {"ok": False, "dots": 0, "glyph_ratio": 0.0, "reason": ""}
+    if np is None:
+        out["reason"] = "no-numpy"
+        return out
     a = _load_gray(png)
     if a is None:
         out["reason"] = "decode"
