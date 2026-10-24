@@ -58,6 +58,15 @@ DEFAULTS: dict[str, Any] = {
     "show_notes": True,
     "overlay_locked": False,       # True = 鼠标穿透（不挡点击）
     "overlay_visible": True,
+    # ---- 覆盖原文（把中文直接盖在游戏原文上）----
+    "cover_mode": False,           # 按钮/F11 开关，开启后译文盖住原日文
+    "cover_alpha": 1.0,
+    "cover_match_bg": True,   # 取自游戏对话框底色，盖上去没有色差
+    "cover_bg": "#0b0f16",
+    "cover_fg": "#ffffff",
+    "cover_max_size": 30,
+    "cover_min_size": 13,
+    "cover_exclude_capture": True,  # 让自己不被截图拍到（零闪烁的关键）
     "font_jp": "Yu Gothic UI",
     "font_zh": "Microsoft YaHei UI",
     "theme": "dark",               # dark | light

@@ -401,7 +401,8 @@ def offline_result(jp_text: str) -> dict:
 # ============================================================================
 
 TRANSLATE_SYSTEM = """你是 galgame 译者。把日文台词译成自然口语化的简体中文。
-只输出译文本身：单行中文，不要引号、不要「译文：」前缀、不要解释、不要保留日文。"""
+只翻译【日文】标记的那一句；【上文】和【术语表】只用来判断指代、性别与语气，绝对不要翻译、不要出现在输出里。
+只输出这一句的译文：单行中文，不要换行、不要引号、不要「译文：」前缀、不要解释、不要保留日文。"""
 
 GRAMMAR_SYSTEM = """你是日语教师，读者是中文母语的日语学习者。针对给定日文台词（和已有译文）输出讲解。
 只输出一个 JSON 对象，不要 markdown 代码块，不要任何前言。结构：
@@ -509,19 +510,43 @@ def _slim_parts(jp_text: str, context: list[str] | None, glossary: str) -> list[
     return parts
 
 
+def _history_messages(history, jp_text: str) -> list[dict]:
+    """把上文拼成真正的对话历史。
+
+    以前上文和待翻句一起塞进同一条 user 消息，模型时不时「顺手把上文也翻了」，
+    输出好几行中文；覆盖原文时那几行会一起盖到游戏框里，非常难看。
+    改成「历史轮次」之后，待翻的只有最后一句。
+    """
+    msgs: list[dict] = []
+    for jp, zh in (history or [])[-4:]:
+        if not jp:
+            continue
+        msgs.append({"role": "user", "content": "【日文】\n" + str(jp).strip()})
+        if zh:
+            msgs.append({"role": "assistant", "content": str(zh).strip()})
+    msgs.append({"role": "user", "content": "【日文】\n" + jp_text.strip()})
+    return msgs
+
+
 def translate_stream(
     jp_text: str,
     kwargs: dict,
     *,
     context: list[str] | None = None,
     glossary: str = "",
+    history: list[tuple[str, str]] | None = None,
     max_tokens: int = 240,
 ):
     """第一段：只要译文。逐块 yield 中文增量，调用方可以边收边显示。"""
-    msgs = [
-        {"role": "system", "content": TRANSLATE_SYSTEM},
-        {"role": "user", "content": "\n\n".join(_slim_parts(jp_text, context, glossary))},
-    ]
+    head = [{"role": "system", "content": TRANSLATE_SYSTEM}]
+    if glossary.strip():
+        head[0] = {"role": "system",
+                   "content": TRANSLATE_SYSTEM + "\n\n【术语表，必须沿用】\n" + glossary.strip()}
+    if history:
+        msgs = head + _history_messages(history, jp_text)
+    else:
+        msgs = head + [{"role": "user",
+                        "content": "\n\n".join(_slim_parts(jp_text, context, glossary))}]
     kw = dict(kwargs)
     kw.pop("max_tokens", None)
     kw["max_tokens"] = max_tokens
@@ -535,13 +560,19 @@ def translate_once(
     *,
     context: list[str] | None = None,
     glossary: str = "",
+    history: list[tuple[str, str]] | None = None,
     max_tokens: int = 240,
 ) -> str:
     """第一段的非流式版本（网关不支持 stream 时用）。"""
-    msgs = [
-        {"role": "system", "content": TRANSLATE_SYSTEM},
-        {"role": "user", "content": "\n\n".join(_slim_parts(jp_text, context, glossary))},
-    ]
+    head = [{"role": "system", "content": TRANSLATE_SYSTEM}]
+    if glossary.strip():
+        head[0] = {"role": "system",
+                   "content": TRANSLATE_SYSTEM + "\n\n【术语表，必须沿用】\n" + glossary.strip()}
+    if history:
+        msgs = head + _history_messages(history, jp_text)
+    else:
+        msgs = head + [{"role": "user",
+                        "content": "\n\n".join(_slim_parts(jp_text, context, glossary))}]
     kw = dict(kwargs)
     kw["max_tokens"] = max_tokens
     kw["json_mode"] = False

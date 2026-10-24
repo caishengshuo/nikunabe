@@ -31,8 +31,8 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 WM_HOTKEY = 0x0312
 MOD_NOREPEAT = 0x4000
-VK_F2, VK_F3, VK_F4, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10 = (
-    0x71, 0x72, 0x73, 0x75, 0x76, 0x77, 0x78, 0x79,
+VK_F2, VK_F3, VK_F4, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11 = (
+    0x71, 0x72, 0x73, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A,
 )
 
 # ---------- 64 位指针安全 ----------
@@ -379,6 +379,42 @@ def _binarize_rgb(rgb: bytes, w: int, h: int, invert: bool = False) -> bytes:
 def hwnd_of(widget) -> int:
     """Tk 控件的顶层 HWND。"""
     return int(widget.winfo_id())
+
+
+def top_hwnd(widget) -> int:
+    """控件的顶层 HWND。
+
+    Tk 的 ``winfo_id()`` 给的是内部子窗口；``SetWindowDisplayAffinity`` 只认顶层窗口，
+    传子窗口会返回 ERROR_INVALID_PARAMETER(87)。这里一路 GetParent 走到根。
+    """
+    h = int(widget.winfo_id())
+    seen: set[int] = set()
+    while h and h not in seen:
+        seen.add(h)
+        parent = user32.GetParent(ctypes.c_void_p(h))
+        if not parent:
+            break
+        h = int(parent)
+    return h
+
+
+WDA_NONE = 0x00000000
+WDA_MONITOR = 0x00000001
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def set_capture_excluded(hwnd: int, enabled: bool = True) -> bool:
+    """让窗口不被屏幕捕获拍到（Windows 10 2004+）。
+
+    「覆盖原文」靠这一条做成：玩家屏幕上看到的是中文，而我们自己截图拿到的是
+    窗口背后的原日文，于是判重/翻下一句完全不受遮挡影响，也不用闪烁取样。
+    返回 False 表示系统不支持（老版本 Windows / 部分驱动），调用方要退化为隐藏取样。
+    """
+    try:
+        flag = WDA_EXCLUDEFROMCAPTURE if enabled else WDA_NONE
+        return bool(user32.SetWindowDisplayAffinity(ctypes.c_void_p(int(hwnd)), flag))
+    except Exception:
+        return False
 
 
 def place_window(hwnd: int, x: int, y: int, w: int, h: int, topmost: bool = True) -> None:

@@ -15,6 +15,7 @@ from .overlay_keys import HOTKEY_MAP
 from .pipeline import Engine
 from .store import Store
 from .textutil import display_join, normalize
+from .ui_cover import CoverWindow
 from .ui_overlay import Overlay
 from .ui_region import RegionSelector
 from .ui_settings import SettingsDialog
@@ -53,6 +54,12 @@ class MainWindow:
         self._start_hotkeys()
         # 截图时排除悬浮窗自身，否则贴在对话框上的译文会被 OCR 回来（自动翻译因此永不触发）
         self.engine.set_overlay_rect(self.overlay.screen_rect)
+        # 覆盖原文：把中文直接盖在游戏原文上（系统级截图排除，见 ui_cover 模块注释）
+        self.cover = CoverWindow(self.root, cfg)
+        self.engine.cover = self.cover
+        self.cover.set_rect(self.cfg.region)
+        if self.cfg.get("cover_mode"):
+            self.overlay.hide_window()   # 覆盖模式下默认收起底部字幕条，画面干净
         # 启动就先躲开识别区：等到第一帧 OCR 之后再挪，第一帧仍会读到自己的译文
         self.root.update_idletasks()
         if self.cfg.region[2] >= 8 and self.overlay.avoid_rect(self.cfg.region):
@@ -145,6 +152,9 @@ class MainWindow:
                    command=self.translate_now).pack(side="left")
         ttk.Button(row2, text="字幕显隐（F10）",
                    command=lambda: self.overlay.toggle()).pack(side="left", padx=8)
+        self.var_cover = tk.BooleanVar(value=bool(self.cfg.get("cover_mode")))
+        ttk.Checkbutton(row2, text="覆盖原文（F11）", variable=self.var_cover,
+                        command=self.toggle_cover).pack(side="left")
         self.var_lock = tk.BooleanVar(value=bool(self.cfg.get("overlay_locked")))
         ttk.Checkbutton(row2, text="鼠标穿透（F6）", variable=self.var_lock,
                         command=self.toggle_lock).pack(side="left")
@@ -264,6 +274,7 @@ class MainWindow:
             self.cfg.set("region", list(rect))
             self.cfg.save()
             self.lbl_region.configure(text=self._region_text())
+            self.cover.set_rect(self.cfg.region)
             moved = self.overlay.avoid_rect(rect)
             hint = self._region_advice(rect)
             self.set_status(hint or f"区域已设置 {rect}")
@@ -337,6 +348,20 @@ class MainWindow:
             self.engine.stop_auto()
             self.set_status("自动翻译：关")
 
+    def toggle_cover(self) -> None:
+        """覆盖原文：把中文直接盖在游戏原文的位置上，画面看起来就是官方中文。"""
+        on = self.cover.toggle()
+        self.var_cover.set(on)
+        if on:
+            self.overlay.hide_window()
+            if getattr(self.cover, "excluded", False):
+                self.set_status("覆盖原文：开（译文盖住日文，日文仍能被读取，不影响自动翻译）")
+            else:
+                self.set_status("覆盖原文：开（本机不支持截图排除，取样瞬间会闪一下）")
+        else:
+            self.overlay.show_window()
+            self.set_status("覆盖原文：关（恢复底部字幕条）")
+
     def toggle_lock(self) -> None:
         self.cfg.set("overlay_locked", bool(self.var_lock.get()))
         self.cfg.save()
@@ -406,6 +431,10 @@ class MainWindow:
             except Exception:
                 pass
             self.engine._ocr = None
+        try:
+            self.cover.apply_theme()
+        except Exception:
+            pass
         self.set_status("设置已应用")
 
     # ---------- 事件循环 ----------
@@ -425,6 +454,9 @@ class MainWindow:
                 self.translate_now()
             elif name == "F10":
                 self.overlay.toggle()
+            elif name == "F11":
+                self.var_cover.set(not self.var_cover.get())
+                self.toggle_cover()
             elif name == "F6":
                 self.var_lock.set(not self.var_lock.get())
                 self.toggle_lock()
@@ -439,6 +471,8 @@ class MainWindow:
                 self._show_result(data)
             elif kind == "partial":
                 self.overlay.show_partial(data)
+                if data.get("zh"):
+                    self.cover.show(data["zh"])   # 边译边盖：不用等整句
                 if data.get("stage") == "grammar":
                     self.set_status("译文已出，正在补语法讲解…")
                 else:
@@ -463,6 +497,7 @@ class MainWindow:
             self.set_status("这一帧不像台词，已跳过")
             return
         self.overlay.show(res)
+        self.cover.show(res.get("zh") or "")
         # 语法讲解是异步补上的：同一句要「替换」上一块，不能又追加一遍
         jp = (res.get("jp") or res.get("jp_ocr") or "").strip()
         replace = bool(res.get("enrich")) and jp == getattr(self, "_last_block_jp", None)
@@ -529,6 +564,10 @@ class MainWindow:
         try:
             if self._hotkeys:
                 self._hotkeys.stop()
+        except Exception:
+            pass
+        try:
+            self.cover.destroy()
         except Exception:
             pass
         try:

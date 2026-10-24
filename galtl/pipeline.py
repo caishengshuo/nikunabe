@@ -33,6 +33,25 @@ def _norm_pattern(s: str) -> str:
     return (s or "").replace("〜", "").replace("～", "").replace(" ", "").replace("　", "").strip()
 
 
+def _one_line(zh: str) -> str:
+    """译文收成一行（覆盖原文是要直接盖在游戏对话框上的）。
+
+    模型偶尔会「顺手把上文也翻了」，吐出好几行各自独立的译文。这里分两种情况：
+    多出来的是很短的语气尾巴（≤12 字，如「真是的。」）→ 合进最长那行；
+    多出来的是整句（那是上文被翻了）→ 只保留最长那行。
+    """
+    if not zh:
+        return zh
+    lines = [ln.strip() for ln in str(zh).replace("\r", "").split("\n") if ln.strip()]
+    if len(lines) <= 1:
+        return lines[0] if lines else ""
+    main = max(lines, key=len)
+    others = [ln for ln in lines if ln is not main]
+    if all(len(o) <= 12 for o in others) and len(main) + sum(len(o) for o in others) <= len(main) * 1.5:
+        return "".join(lines)          # 原顺序拼回去，保留「……真是的。」这类尾巴
+    return main
+
+
 class Engine:
     def __init__(self, cfg: Config, store: Store, events: "queue.Queue"):
         self.cfg = cfg
@@ -59,6 +78,7 @@ class Engine:
         self._last_error_ts = 0.0
         self._slow_hint_shown = False
         self._overlay_rect_fn = None      # 悬浮窗屏幕矩形(provider)，截图时排除，见 set_overlay_rect
+        self.cover = None                 # ui_cover.CoverWindow：覆盖原文模式
         self.stats = {"ocr": 0, "llm": 0, "cache": 0, "fail": 0, "last_ms": 0}
 
     # ---------- 事件 ----------
@@ -150,12 +170,16 @@ class Engine:
         if w < 8 or h < 8:
             raise RuntimeError("尚未框选字幕区域")
         t0 = time.perf_counter()
-        png, _, _ = winapi.grab_png(
-            x, y, w, h,
-            scale=self.effective_scale(w, h),
-            binarize=bool(self.cfg.get("binarize", False)),
-            exclude=self._exclude_rect(x, y, w, h),
-        )
+        self._cover_dip(True)
+        try:
+            png, _, _ = winapi.grab_png(
+                x, y, w, h,
+                scale=self.effective_scale(w, h),
+                binarize=bool(self.cfg.get("binarize", False)),
+                exclude=self._exclude_rect(x, y, w, h),
+            )
+        finally:
+            self._cover_dip(False)
         lines = self.ocr().recognize_png(png)
         merged = merge_lines(lines)
         text = normalize(display_join(merged))
@@ -174,10 +198,17 @@ class Engine:
         glossary = self.cfg.get("glossary") or ""
         ctx_n = int(self.cfg.get("context_lines", 2) or 0)
         context = self._context[-ctx_n:] if ctx_n else []
+        # 上文按「日文 / 已有译文」成对送进对话历史：模型只看得到最后一句要翻，
+        # 不会再顺手把上文也翻译成好几行中文（那样一盖上去就是堆叠的乱码）。
+        history: list[tuple[str, str]] = []
+        for old_jp in context:
+            got = self.store.get(old_jp, 0) or {}
+            history.append((old_jp, (got.get("zh") or "").strip()))
 
         if self.cfg.get("use_cache", True):
             hit = self.store.get(jp_text, int(self.cfg.get("cache_ttl_days", 0) or 0))
             if hit:
+                hit["zh"] = _one_line(hit.get("zh") or "")
                 self.stats["cache"] += 1
                 hit["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
                                "cached": True, "engine": "cache"}
@@ -202,7 +233,7 @@ class Engine:
             else:
                 if not has_japanese(jp_text):
                     raise llm.LlmError("没有识别到日文")
-                res = self._translate_two_phase(jp_text, kwargs, context, glossary)
+                res = self._translate_two_phase(jp_text, kwargs, context, glossary, history)
                 engine = "text:" + kwargs["model"]
             self.stats["llm"] += 1
         except llm.LlmError as exc:
@@ -220,15 +251,20 @@ class Engine:
         res["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1), "engine": engine}
         if "seq" in prev_meta:          # 异步讲讲解靠这个号判断是否已翻到下一句
             res["meta"]["seq"] = prev_meta["seq"]
+        if prev_meta.get("cut"):        # 断流的半句：标记带过去，下面不缓存
+            res["meta"]["cut"] = True
         res["meta"]["first_ms"] = res.get("first_ms")
         res.pop("first_ms", None)
-        if self.cfg.get("use_cache", True):
+        if (res.get("meta") or {}).get("cut"):
+            pass                                        # 半句：只显示、不入库
+        elif self.cfg.get("use_cache", True):
             self.store.put(res.get("jp") or jp_text, res)
         self._last_result = res
         return res
 
     def _translate_two_phase(self, jp_text: str, kwargs: dict,
-                            context: list[str], glossary: str) -> dict:
+                            context: list[str], glossary: str,
+                            history: list[tuple[str, str]] | None = None) -> dict:
         """先出译文（流式，几百毫秒可见），再补语法讲解。
 
         旧实现是一次调用同时要译文+语法 JSON：必须等整段 JSON 生成完（2~3 秒）才见到中文。
@@ -237,6 +273,7 @@ class Engine:
         t0 = time.perf_counter()
         max_tr = int(self.cfg.get("translate_max_tokens", 240) or 240)
         zh = ""
+        cut = False
         first_ms: float | None = None
 
         if bool(self.cfg.get("stream_translate", True)):
@@ -244,7 +281,8 @@ class Engine:
             last_emit = 0.0
             try:
                 for piece in llm.translate_stream(
-                    jp_text, kwargs, context=context, glossary=glossary, max_tokens=max_tr
+                    jp_text, kwargs, context=context, glossary=glossary,
+                    history=history, max_tokens=max_tr
                 ):
                     acc.append(piece)
                     now = time.perf_counter()
@@ -258,16 +296,22 @@ class Engine:
                             "ms": round((now - t0) * 1000),
                         })
                 zh = "".join(acc).strip()
-            except llm.LlmError:
+            except llm.LlmError as exc:
                 if not acc:
                     raise
+                # 中途断流：已收到的先显示，但绝不当成成品缓存，
+                # 否则下次命中缓存会永远显示半句话（覆盖原文时特别扎眼）。
+                cut = True
+                log.warning("译文流中断，只用已收到部分：%s", exc)
                 zh = "".join(acc).strip()
         else:
             zh = llm.translate_once(
-                jp_text, kwargs, context=context, glossary=glossary, max_tokens=max_tr
+                jp_text, kwargs, context=context, glossary=glossary,
+                history=history, max_tokens=max_tr
             ).strip()
             first_ms = (time.perf_counter() - t0) * 1000.0
 
+        zh = _one_line(zh)
         if not zh:
             # 流式没吐内容（个别网关不支持 stream）→ 退回原来的一次性解析
             log.warning("流式译文为空，回退到整段解析")
@@ -285,6 +329,8 @@ class Engine:
             "notes": "",
             "first_ms": round(first_ms or 0, 1),
         }
+        if cut:
+            res["meta"] = {"cut": True}     # 流中断：只显示、不入库
 
         if bool(self.cfg.get("grammar_phase", True)):
             self.emit("partial", {"jp": jp_text, "zh": zh, "stage": "grammar",
@@ -557,9 +603,23 @@ class Engine:
         x, y, w, h = self._capture_region()
         if w < 8 or h < 8:
             raise RuntimeError("尚未框选字幕区域")
-        png, _, _ = winapi.grab_png(x, y, w, h, scale=0.12, binarize=False,
-                                    exclude=self._exclude_rect(x, y, w, h))
+        self._cover_dip(True)
+        try:
+            png, _, _ = winapi.grab_png(x, y, w, h, scale=0.12, binarize=False,
+                                        exclude=self._exclude_rect(x, y, w, h))
+        finally:
+            self._cover_dip(False)
         return hashlib.sha1(png).hexdigest()
+
+    def _cover_dip(self, on: bool) -> None:
+        """覆盖层是否需要在取样瞬间隐身（只有系统不支持截图排除时才需要）。"""
+        cv = self.cover
+        if cv is None or not getattr(cv, "visible", False) or getattr(cv, "excluded", True):
+            return
+        try:
+            cv.dip(on)
+        except Exception:
+            pass
 
     def _finish_tick(self, jp_text: str, png: bytes | None, key: str) -> dict:
         self._last_key = key
