@@ -22,7 +22,8 @@ from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
 from .textutil import (
-    dedupe_key, display_join, has_japanese, is_meaningful, looks_japanese, normalize, similar_key,
+    canon_punct, dedupe_key, display_join, has_japanese, is_meaningful, is_punct_only,
+    looks_japanese, normalize, similar_key, strip_nameplate,
     stable_key,
 )
 
@@ -223,14 +224,18 @@ class Engine:
             self._cover_dip(False)
         lines = self.ocr().recognize_png(png)
         merged = merge_lines(lines)
-        text = normalize(display_join(merged))
+        text = strip_nameplate(normalize(display_join(merged)))
         # 原文字号：OCR 给的是放大后的像素，除回去就是屏幕上真实的字高。
         # 覆盖原文要按这个字号画中文，否则一眼就能看出「块不一样大」。
         try:
             scale = self.effective_scale(w, h) or 1.0
             hs = sorted(int(l.get("h") or 0) for l in lines if (l.get("text") or "").strip())
             hs = [v for v in hs if v >= 6]
-            self._glyph_px = (hs[len(hs) // 2] / scale) if hs else 0.0
+            got = (hs[len(hs) // 2] / scale) if hs else 0.0
+            # 纯标点那句（「………」）的字框只有几个点高，别拿它把字号带跑；
+            # 明显比上一句矮一半以上就不采信。
+            if got >= 6 and (self._glyph_px <= 0 or got >= 0.55 * self._glyph_px):
+                self._glyph_px = got
         except Exception:
             self._glyph_px = 0.0
         self.stats["ocr"] += 1
@@ -254,6 +259,16 @@ class Engine:
         for old_jp in context:
             got = self.store.get(old_jp, 0) or {}
             history.append((old_jp, (got.get("zh") or "").strip()))
+
+        if is_punct_only(jp_text):
+            # 「………」「!?」：原样搬过去就行，既不该当成噪声丢掉，也没必要花 token。
+            out = canon_punct(jp_text)
+            res = {"jp": jp_text, "kana": "", "zh": out, "literal": "",
+                   "grammar": [], "vocab": [], "notes": "", "punct": True,
+                   "meta": {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                            "engine": "punct", "cached": False}}
+            self._last_result = res
+            return res
 
         if self.cfg.get("use_cache", True):
             hit = self.store.get(jp_text, int(self.cfg.get("cache_ttl_days", 0) or 0))
@@ -773,6 +788,8 @@ class Engine:
 
         key = stable_key(jp_text) or dedupe_key(jp_text) if jp_text else (
             f"vision@{hash(png)}" if png else "")
+        if not key and jp_text and is_punct_only(jp_text):
+            key = "punct:" + canon_punct(jp_text)
         if not key:
             self._seen = None
             return None
@@ -787,7 +804,7 @@ class Engine:
             self._seen = None
             return None
 
-        if mode == "ocr" and not is_meaningful(
+        if mode == "ocr" and not is_punct_only(jp_text) and not is_meaningful(
             jp_text, min_ratio=float(self.cfg.get("min_ratio", 0.35))
         ):
             # 别静默丢弃：用户看到的只是「自动翻译没反应」，无从判断是框选不对还是参数太严

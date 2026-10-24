@@ -58,6 +58,9 @@ class Overlay:
         except Exception:
             pass
         self.win.configure(bg=THEMES["dark"]["border"])
+        # 透明背景：把整窗底色设成一个「绝不会出现在文字里」的键控色，
+        # 再用 -transparentcolor 让这个颜色在屏幕上完全消失（只剩文字）。
+        self._key_bg = "#010203"
         self._hwnd = None
         self._drag = None
         # 位置以这两个字段为准：Win32 搬窗口后 Tk 的 winfo_x/y 不会跟着更新，
@@ -110,11 +113,18 @@ class Overlay:
         self.menu.add_separator()
         self.menu.add_command(label="位置重置（底部居中）", command=self.reset_pos)
         self.menu.add_separator()
+        self.menu.add_command(label="背景透明 / 不透明", command=self.toggle_transparent)
         self.menu.add_command(label="锁定 / 鼠标穿透（F6）", command=self._toggle_lock)
         self.menu.add_command(label="设置…", command=lambda: self.on_settings and self.on_settings())
         self.menu.add_command(label="隐藏字幕（F10）", command=self.hide_window)
 
     # ---------- 配置 ----------
+    def toggle_transparent(self) -> None:
+        """切换字幕条背景：透明（只留文字）↔ 半透明底板。"""
+        now = bool(self.cfg.get("overlay_bg_transparent", True))
+        self.cfg.set("overlay_bg_transparent", not now)
+        self.apply_config()
+
     def apply_config(self) -> None:
         theme = THEMES.get(self.cfg.get("theme", "dark"), THEMES["dark"])
         self.theme = theme
@@ -131,14 +141,19 @@ class Overlay:
         self.f_gram = tkfont.Font(family=fz, size=gs)
         self.f_meta = tkfont.Font(family="Consolas", size=8)
 
-        self.win.configure(bg=theme["border"])
-        self.body.configure(bg=theme["bg"])
+        transparent = bool(self.cfg.get("overlay_bg_transparent", True))
+        key = self._key_bg
+        bg = key if transparent else theme["bg"]
+        edge = key if transparent else theme["border"]
+
+        self.win.configure(bg=edge)
+        self.body.configure(bg=bg)
         for w in (self.hdr,):
-            w.configure(bg=theme["bg"])
-        self.grip.configure(bg=theme["bg"], fg=theme["meta"])
-        self.hint.configure(bg=theme["bg"], fg=theme["meta"])
-        self.meta.configure(bg=theme["bg"], fg=theme["meta"], font=self.f_meta)
-        self.text.configure(bg=theme["bg"], fg=theme["zh"], font=self.f_zh,
+            w.configure(bg=bg)
+        self.grip.configure(bg=bg, fg=theme["meta"])
+        self.hint.configure(bg=bg, fg=theme["meta"])
+        self.meta.configure(bg=bg, fg=theme["meta"], font=self.f_meta)
+        self.text.configure(bg=bg, fg=theme["zh"], font=self.f_zh,
                             selectbackground="#2b4a6f", selectforeground="#ffffff")
 
         self.text.tag_configure("jp", font=self.f_jp, foreground=theme["jp"],
@@ -147,7 +162,7 @@ class Overlay:
         self.text.tag_configure("zh", font=self.f_zh, foreground=theme["zh"],
                                 spacing1=2, spacing3=4)
         self.text.tag_configure("sep", font=tkfont.Font(family=fz, size=4),
-                                foreground=theme["border"])
+                                foreground=edge)
         self.text.tag_configure("ghead", font=self.f_head, foreground=theme["gram_head"],
                                 spacing1=4, spacing3=1)
         self.text.tag_configure("gram", font=self.f_gram, foreground=theme["gram"],
@@ -158,7 +173,16 @@ class Overlay:
                                 lmargin1=0, lmargin2=0, spacing1=4)
         self.text.tag_configure("cur", font=self.f_zh, foreground=theme["note"])
         try:
-            self.win.attributes("-alpha", float(self.cfg.get("overlay_alpha", 0.93)))
+            if transparent:
+                # 键控色必须是完全不透明的，否则那个颜色本身会带着半透明残留
+                self.win.attributes("-alpha", 1.0)
+                self.win.attributes("-transparentcolor", key)
+            else:
+                try:
+                    self.win.attributes("-transparentcolor", "")
+                except Exception:
+                    pass
+                self.win.attributes("-alpha", float(self.cfg.get("overlay_alpha", 0.93)))
         except Exception:
             pass
         self._render()

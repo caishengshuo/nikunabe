@@ -128,3 +128,61 @@ def display_join(lines: list[str]) -> str:
 
 def one_line(text: str) -> str:
     return re.sub(r"\s*\n\s*", "", normalize(text))
+
+# ---------- 纯标点台词 ----------
+# 「………」「!?」这种一整句只有标点的台词，OCR 认得出来，但过不了
+# 「日文字符占比」那道门，也不该拿去花 token 翻。识别它的意义是：
+# 1) 别当噪声丢掉——不然用户看到的是「程序没反应」；
+# 2) 覆盖层照原样把标点印上去，画面才不会突然空一块。
+_PUNCT_CHARS = set(
+    "…‥‥・･.。,，、!！?？♪♬ー―─-~〜～"
+    "「」『』【】〈〉《》<>（）()[]［］{}｛｝“”‘’\"'"
+    ":：;；/／\\|｜*＊#＃@＃&＆%％+＋=＝^＾_＿` ＄$￥"
+    "　 ‾＿⋯﹏ 、"
+)
+
+_ELLIPSIS_RE = re.compile(r"(?:\.{2,}|。{2,}|…+|‥+|・{3,}|⋯+)")
+_DASH_RUN_RE = re.compile(r"[ー―─\-]{2,}")
+
+
+def is_punct_only(text: str) -> bool:
+    """整句只有标点/符号/空白（没有假名、汉字、字母、数字）。"""
+    body = [c for c in (text or "") if not c.isspace()]
+    if not body:
+        return False
+    return all(c in _PUNCT_CHARS for c in body)
+
+
+def canon_punct(text: str) -> str:
+    """把标点收敛成中文排版习惯：省略号统一成「……」、长破折号统一成「──」。"""
+    t = normalize(text)
+    t = _ELLIPSIS_RE.sub("……", t)
+    t = _DASH_RUN_RE.sub("──", t)
+    t = re.sub(r"[ \t\u3000]+", "", t)
+    return t.strip()
+
+# ---------- 名牌 ----------
+# galgame 的对话框常把说话人放在文字上方：【将臣】/（七海）。框选稍微高一点就会把它
+# 一起读进来，于是「【将臣】\n………」被当成一句台词，翻译出「将臣」这种鬼东西。
+_NAME_LINE_RE = re.compile(r"^[【〔\[（(]\s*[^】〕\]）)\n]{1,10}\s*[】〕\]）)]$")
+
+
+def strip_nameplate(text: str) -> str:
+    """去掉首行的名牌（只在后面还有正文时才去）。"""
+    lines = [ln for ln in (text or "").split("\n")]
+    body = [ln for ln in lines if ln.strip()]
+    if len(body) < 2:
+        return text
+    first = body[0].strip()
+    if _NAME_LINE_RE.match(first):
+        # 只掐掉那一条，其余顺序保持
+        dropped = False
+        out = []
+        for ln in lines:
+            if not dropped and ln.strip() == first:
+                dropped = True
+                continue
+            out.append(ln)
+        return "\n".join(out).strip()
+    return text
+

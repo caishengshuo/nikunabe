@@ -49,7 +49,8 @@ DEFAULTS: dict[str, Any] = {
     # ---- 悬浮窗 ----
     "overlay_pos": [0, 0],
     "overlay_width": 1100,
-    "overlay_alpha": 0.93,
+    "overlay_bg_transparent": True,   # 字幕条背景透明：只留文字，不挡游戏画面
+    "overlay_alpha": 0.93,    # 仅在不透明模式下生效
     "jp_size": 12,
     "zh_size": 19,
     "gram_size": 11,
