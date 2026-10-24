@@ -1,5 +1,14 @@
 # 变更记录
 
+## 1.0.15 — 退出/关窗时不再抛 TclError
+
+- 悬浮窗与覆盖层加了 `_dead` 标记：销毁之后不再碰 Tk 控件。
+  之前切换覆盖/关窗的瞬间可能抛出
+  `_tkinter.TclError: invalid command name ...!toplevel.!frame.!text`
+  （日志里那条「未捕获异常」就是它）。
+- `punct_check.py` 增加第 7 组：拿真实游戏截图（「………」那一句）跑完整链路，
+  确认 OCR 读空 → 墨迹判定 → 输出「……」→ engine=punct。
+
 ## 1.0.14 — OCR 读不出标点时，用像素几何兜底
 
 Windows 的日文 OCR 对孤立的「………」**一个字符都不返回**，所以 1.0.13 的标点直通

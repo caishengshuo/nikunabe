@@ -117,6 +117,32 @@ text3, _, _ = eng3.grab_text()
 check("有字的图不当标点", text3 == "", repr(text3))
 eng3.close()
 
+
+print("[7] 真实截图：用户那句「………」")
+from PIL import Image as _Im
+_shot = r"C:\Users\21298\.dsh\attachments\v1\objects\6d\6d7677f93e0e8ce12eca687c0d055f7e247c3b853d5d3c5901a6628409bac704"
+try:
+    _im = _Im.open(_shot)
+    _crop = _im.crop((600, 1290, 900, 1345))
+    _crop = _crop.resize((_crop.width * 2, _crop.height * 2), _Im.LANCZOS)
+    _buf = io.BytesIO(); _crop.save(_buf, format="PNG")
+    _png = _buf.getvalue()
+    check("墨迹判定为点串", inkprobe.dots_like(_png), str(inkprobe.analyze(_png)))
+
+    eng4 = Engine(cfg, Store(":memory:"), queue.Queue())
+    eng4.cfg.set("mode", "ocr"); eng4.cfg.set("punct_fallback", True)
+    eng4.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()
+    eng4.effective_scale = lambda w, h: 1.0
+    eng4._capture_region = lambda: (0, 0, 300, 55)
+    _pl.winapi.grab_png = lambda *a, **k: (_png, 300, 55)
+    t4, _, _ = eng4.grab_text()
+    check("真实像素 → 「……」", t4 == "……", repr(t4))
+    r4 = eng4.translate(t4)
+    check("engine=punct", (r4.get("meta") or {}).get("engine") == "punct", str(r4.get("meta")))
+    eng4.close()
+except FileNotFoundError:
+    print("  SKIP 找不到那张截图（换了机器就跳过）")
+
 eng.close(); store.close()
 print()
 print("失败项：", fails if fails else "无")

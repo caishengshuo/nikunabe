@@ -57,6 +57,7 @@ class CoverWindow:
         self._visible = False
         self._dipped = False
         self._glyph_px = 0.0                   # 原文实测字高（屏幕像素）
+        self._dead = False                      # 关窗/退出后置位，之后不再碰 Tk
         self._enabled = bool(cfg.get("cover_mode", False))
         self.excluded = False
 
@@ -222,6 +223,8 @@ class CoverWindow:
         winapi.place_window(self._hwnd, x, y, w, h, topmost=True)
 
     def _render(self, zh: str) -> None:
+        if self._dead:
+            return
         x, y, w, h = self._rect or (0, 0, 800, 120)
         pad_x = 12
         pad_y = 10
@@ -307,6 +310,7 @@ class CoverWindow:
         return lines
 
     def destroy(self) -> None:
+        self._dead = True
         try:
             self.win.destroy()
         except tk.TclError:

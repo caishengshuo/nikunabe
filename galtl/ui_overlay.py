@@ -565,6 +565,7 @@ class Overlay:
             self._fit_height()
 
     def destroy(self) -> None:
+        self._dead = True
         try:
             self.win.destroy()
         except Exception:

@@ -7,5 +7,5 @@
 仅依赖 Python 标准库；numpy 若存在则用于加速缩放与二值化。
 """
 
-__version__ = "1.0.14"
+__version__ = "1.0.15"
 APP_NAME = "galgame 日语助手"
