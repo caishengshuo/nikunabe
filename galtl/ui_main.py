@@ -477,7 +477,7 @@ class MainWindow:
             elif kind == "partial":
                 self.overlay.show_partial(data)
                 if data.get("zh"):
-                    self.cover.show(data["zh"])   # 边译边盖：不用等整句
+                    self.cover.show(data["zh"], getattr(self.engine, "_glyph_px", 0.0))   # 边译边盖：不用等整句
                 if data.get("stage") == "grammar":
                     self.set_status("译文已出，正在补语法讲解…")
                 else:
@@ -503,7 +503,7 @@ class MainWindow:
             return
         self.overlay.show(res)
         self._last_zh = res.get("zh") or ""
-        self.cover.show(self._last_zh)
+        self.cover.show(self._last_zh, getattr(self.engine, "_glyph_px", 0.0))
         # 语法讲解是异步补上的：同一句要「替换」上一块，不能又追加一遍
         jp = (res.get("jp") or res.get("jp_ocr") or "").strip()
         replace = bool(res.get("enrich")) and jp == getattr(self, "_last_block_jp", None)

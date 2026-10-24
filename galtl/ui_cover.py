@@ -56,6 +56,7 @@ class CoverWindow:
         self._bg_color: str | None = None      # 从游戏对话框取样来的底色
         self._visible = False
         self._dipped = False
+        self._glyph_px = 0.0                   # 原文实测字高（屏幕像素）
         self._enabled = bool(cfg.get("cover_mode", False))
         self.excluded = False
 
@@ -134,14 +135,15 @@ class CoverWindow:
             self._render(self._text)
 
     # ---------- 显示 ----------
-    def show(self, zh: str) -> None:
+    def show(self, zh: str, glyph_px: float = 0.0) -> None:
         zh = (zh or "").strip()
         if not self._enabled or not self._rect or not zh:
             self.hide()
             return
-        if zh == self._text and self._visible and not self._dipped:
+        if zh == self._text and self._visible and not self._dipped and abs(glyph_px - self._glyph_px) < 0.5:
             return
         self._text = zh
+        self._glyph_px = float(glyph_px or 0.0)
         self._render(zh)
         self._place()
         if not self._dipped:
@@ -223,7 +225,7 @@ class CoverWindow:
         x, y, w, h = self._rect or (0, 0, 800, 120)
         pad_x = 12
         pad_y = 10
-        size = self._fit_size(zh, w - 2 * pad_x, h - 2 * pad_y)
+        size = self._size_for_glyph(self._glyph_px, w - 2 * pad_x, h - 2 * pad_y, zh)
         self.txt.configure(
             state="normal", font=(self._family, size),
             padx=pad_x, pady=self._pad_y_for(zh, size, w - 2 * pad_x, h - 2 * pad_y),
@@ -232,6 +234,41 @@ class CoverWindow:
         self.txt.insert("1.0", zh, "body")
         self.txt.configure(state="disabled")
         log.debug("cover render %r size=%d rect=%s", zh[:40], size, self._rect)
+
+    def _size_for_glyph(self, glyph_px: float, width: int, height: int, text: str) -> int:
+        """按原文实测字高（像素）反推字号；量不到或放不下就退回「尽量大」的旧逻辑。
+
+        中文的「字面高」约等于 em 的 0.9，所以拿 measure("漢") 当 em 用：
+        找到 em≈字高/0.9 的字号，视觉上就和原文字一样大。
+        """
+        lo = int(self.cfg.get("cover_min_size", 12) or 12)
+        match = bool(self.cfg.get("cover_match_size", True))
+        # 要对齐原文字号时，上限不能让「用户调过的 cover_max_size」把比例压坏；
+        # 放不放得下由下面的收缩循环保证。
+        hi = 96 if match else int(self.cfg.get("cover_max_size", 30) or 30)
+        lo = max(6, min(lo, 96))
+        hi = max(lo, min(hi, 120))
+        want = float(glyph_px or 0.0)
+        if not match or want < 6:
+            return self._fit_size(text, width, height)
+        want *= float(self.cfg.get("cover_size_ratio", 1.0) or 1.0)
+        target_em = want / 0.9
+        best = lo
+        best_err = 1e9
+        for size in range(lo, hi + 1):
+            f = tkfont.Font(family=self._family, size=size)
+            em = float(f.measure("漢"))
+            err = abs(em - target_em)
+            if err < best_err:
+                best_err, best = err, size
+        # 放不下就逐级缩（不打乱比例太多，只保证不溢出）
+        size = best
+        while size > lo:
+            f = tkfont.Font(family=self._family, size=size)
+            if self._wrapped_lines(text, f, max(40, width)) * (f.metrics("linespace") + 3) <= max(24, height):
+                break
+            size -= 1
+        return size
 
     def _fit_size(self, text: str, width: int, height: int) -> int:
         hi = int(self.cfg.get("cover_max_size", 30) or 30)

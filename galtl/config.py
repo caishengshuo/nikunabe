@@ -65,8 +65,10 @@ DEFAULTS: dict[str, Any] = {
     "cover_match_bg": True,   # 取自游戏对话框底色，盖上去没有色差
     "cover_bg": "#0b0f16",
     "cover_fg": "#ffffff",
-    "cover_max_size": 30,
-    "cover_min_size": 13,
+    "cover_match_size": True,   # 中文按原文实测字高定字号（比例一致）
+    "cover_size_ratio": 1.0,
+    "cover_align": "center",
+    "cover_min_size": 12,
     "cover_exclude_capture": True,  # 让自己不被截图拍到（零闪烁的关键）
     "font_jp": "Yu Gothic UI",
     "font_zh": "Microsoft YaHei UI",

@@ -120,6 +120,7 @@ class Engine:
         self._overlay_rect_fn = None      # 悬浮窗屏幕矩形(provider)，截图时排除，见 set_overlay_rect
         self.cover = None                 # ui_cover.CoverWindow：覆盖原文模式
         self.stats = {"ocr": 0, "llm": 0, "cache": 0, "fail": 0, "last_ms": 0}
+        self._glyph_px = 0.0                 # 上一帧原文的字高（屏幕像素），覆盖层据此定字号
 
     # ---------- 事件 ----------
     def emit(self, kind: str, data) -> None:
@@ -223,6 +224,15 @@ class Engine:
         lines = self.ocr().recognize_png(png)
         merged = merge_lines(lines)
         text = normalize(display_join(merged))
+        # 原文字号：OCR 给的是放大后的像素，除回去就是屏幕上真实的字高。
+        # 覆盖原文要按这个字号画中文，否则一眼就能看出「块不一样大」。
+        try:
+            scale = self.effective_scale(w, h) or 1.0
+            hs = sorted(int(l.get("h") or 0) for l in lines if (l.get("text") or "").strip())
+            hs = [v for v in hs if v >= 6]
+            self._glyph_px = (hs[len(hs) // 2] / scale) if hs else 0.0
+        except Exception:
+            self._glyph_px = 0.0
         self.stats["ocr"] += 1
         ms = (time.perf_counter() - t0) * 1000.0
         if ms > 900 and not self._slow_hint_shown:
