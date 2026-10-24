@@ -99,7 +99,7 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 
 - **它不会影响识别**：盖上去的窗口对「屏幕捕获」不可见（`WDA_EXCLUDEFROMCAPTURE`），所以程序自己截屏拿到的仍是背后的日文，换句检测和自动翻译照常工作，不会「自己读自己」。
 - **盖住的地方照样能点**：默认点击穿透，存档/选项/快进都能按；想拖动这块中文，按 `F6` 关掉穿透再拖。
-- **可以调**：设置里能改底色 `cover_bg`、字色 `cover_fg`、不透明度 `cover_alpha`（默认 1.0，想透一点就看得到底下的日文）、字号范围 `cover_max_size`/`cover_min_size`、是否自动取底色 `cover_match_bg`。
+- **可以调**：设置里能改底色 `cover_bg`、字色 `cover_fg`、不透明度 `cover_alpha`（默认 1.0，想透一点就看得到底下的日文）；**字号默认跟原文一样大**（每帧 OCR 顺手量出原文字高再反推字号，不用手动调，想微调就动 `cover_size_ratio`）、是否自动取底色 `cover_match_bg`。
 - 老系统不支持那条 API 时，程序在取样的那一瞬间会把自己藏起来再截图，仍然不会读到自己的译文。
 
 ## 热键
@@ -194,7 +194,9 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 | `cover_match_bg` | `true` | 自动取游戏对话框底色；关掉则用 `cover_bg` |
 | `cover_bg` / `cover_fg` | `#0b0f16` / `#ffffff` | 底色 / 字色（`cover_match_bg=true` 时底色以取样为准） |
 | `cover_alpha` | `1.0` | 不透明度；调小会透出底下的日文 |
-| `cover_max_size` / `cover_min_size` | `30` / `13` | 自动找字号填满文字带的上下限 |
+| `cover_match_size` | `true` | 中文按**原文实测字高**定字号，跟日文同一比例；关掉则尽量撑满文字带 |
+| `cover_size_ratio` | `1.0` | 在上面基础上微调大小（1.1 略大，0.9 略小） |
+| `cover_max_size` / `cover_min_size` | `30` / `12` | 仅 `cover_match_size=false` 时作为字号上下限 |
 | `cover_exclude_capture` | `true` | 让覆盖层对截屏不可见（关掉就只有兜底的「取样瞬间隐身」） |
 | `cover_click_through` | `true` | 盖住的地方是否让鼠标穿透到游戏 |
 
