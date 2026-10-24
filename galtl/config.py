@@ -1,9 +1,10 @@
-﻿"""配置读写。config.json 与程序同目录（不可写则回落 LOCALAPPDATA）。"""
+"""配置读写。config.json 与程序同目录（不可写则回落 LOCALAPPDATA）。"""
 from __future__ import annotations
 
 import copy
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from .paths import CONFIG_PATH
@@ -80,7 +81,7 @@ def _merge(base: dict, patch: dict) -> dict:
 
 class Config:
     def __init__(self, path=CONFIG_PATH):
-        self.path = path
+        self.path = Path(path)  # 允许传 str：CI/脚本里写 Config("x.json") 不该炸
         self.data: dict[str, Any] = copy.deepcopy(DEFAULTS)
         self._original: dict[str, Any] = copy.deepcopy(self.data)  # 载入时的快照，用于三方合并
         self._mtime: float = 0.0

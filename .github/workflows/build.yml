@@ -10,6 +10,10 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # 让 Python 在任何控制台代码页下都用 UTF-8 输出，避免中文/日文 print 把 CI 弄崩
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
 
@@ -20,8 +24,10 @@ jobs:
       - name: 安装打包依赖
         run: python -m pip install --upgrade pip pyinstaller pillow
 
-      - name: 自检（导入 + 配置 + 语法库）
-        run: python -c "import galtl, galtl.app, galtl.pipeline; from galtl.grammar import RULES; print('version', galtl.__version__, 'rules', len(RULES))"
+      # 只验能离线验的东西：导入、语法库、生词库、配置默认值。
+      # 真实 OCR 需要日语语言包、翻译需要 API Key，都在 CI 里跳过。
+      - name: 自检（导入 + 语法库 + 生词库 + 配置）
+        run: python ci_selfcheck.py
 
       - name: 打包 exe
         run: cmd /c build.bat
@@ -29,19 +35,27 @@ jobs:
       - name: 组装发布包
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $ver = (Select-String -Path "galtl/__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
           if (-not $ver) { throw "读不到 galtl/__init__.py 里的 __version__" }
           if ($env:GITHUB_REF -like "refs/tags/v*") { $ver = $env:GITHUB_REF -replace "refs/tags/v", "" }
+          Write-Host "version = $ver"
+
+          $exe = "dist/GalgameJP.exe"
+          if (-not (Test-Path $exe)) { throw "打包产物不存在: $exe（看上一阶段 build.bat 的输出）" }
+
           $dir = "release/galgame-jp-helper-v$ver-win64"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "dist/galgame日语助手.exe" $dir
+          Copy-Item $exe (Join-Path $dir "galgame日语助手.exe")   # 发布包里给中文名
           Copy-Item "使用说明.txt" $dir
           Copy-Item "LICENSE" $dir
+
           $zip = "release/galgame-jp-helper-v$ver-win64.zip"
           if (Test-Path $zip) { Remove-Item $zip }
           Compress-Archive -Path "$dir/*" -DestinationPath $zip
           "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-ChildItem release | Select-Object Name, Length | Format-Table -AutoSize
+          Get-ChildItem $dir | Select-Object Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 2) } } | Format-Table -AutoSize
+          "zip = {0:N2} MB" -f ((Get-Item $zip).Length / 1MB)
 
       - uses: actions/upload-artifact@v4
         with:
