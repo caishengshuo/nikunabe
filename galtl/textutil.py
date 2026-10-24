@@ -34,6 +34,31 @@ def has_japanese(text: str) -> bool:
     return bool(_JP_RE.search(text or ""))
 
 
+# 有没有假名。日语台词几乎一定带假名；纯汉字多半是汉化版游戏的中文台词或系统提示，
+# 拿日语模型硬翻就会「牛头不对马嘴」，所以要单独判一次。
+_KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff]")
+
+# 少数「纯汉字但确实是日语」的短句，白名单放行
+_KANJI_ONLY_OK = {
+    "無理", "了解", "大丈夫", "結構", "遠慮", "我慢", "迷惑", "元気", "平気", "本気",
+    "冗談", "最低", "最悪", "最高", "普通", "当然", "確認", "注意", "危険", "禁止",
+}
+
+
+def has_kana(text: str) -> bool:
+    return bool(_KANA_RE.search(text or ""))
+
+
+def looks_japanese(text: str) -> bool:
+    """真·日语台词：带假名，或是白名单里的纯汉字短句。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if has_kana(t):
+        return True
+    return t.strip("。！？!?…ー、, ") in _KANJI_ONLY_OK
+
+
 def jp_ratio(text: str) -> float:
     """日文字符（假名/汉字）在非空白字符中的占比，用于过滤 UI 噪声。"""
     body = [c for c in (text or "") if not c.isspace()]

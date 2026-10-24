@@ -14,6 +14,7 @@ import types
 
 from . import APP_NAME, __version__, winapi
 from .paths import APP_DIR, DATA_DIR, LOG_PATH, OCR_PS1, ensure_dirs
+from . import winapi
 from .config import Config
 from .pipeline import Engine
 from .store import Store
@@ -164,20 +165,25 @@ def diagnostic() -> int:
         ov.win.deiconify()
         root.update()
         x0, y0 = int(ov.win.winfo_x()), int(ov.win.winfo_y())
-        # 往下拖：靠近屏幕底部时会被「内容太长就贴底」的规则上移，看起来像被拉回原位。
-        # 自检改成往上拖，位置一定是可行的。
+        # 目标点必须先夹进屏幕：悬浮窗存在用户上次拖到的位置（可能贴着上边缘），
+        # 直接「往上拖 90」会得到负 y，被夹到 0 后自检就误报「拖不动」。
+        vx, vy, vsw, vsh = winapi.virtual_screen()
+        tx = min(max(x0 + 100, vx), vx + vsw - 200)
+        ty = min(max(y0 - 90, vy), vy + vsh - 80)
         ov._on_press(types.SimpleNamespace(x_root=x0 + 20, y_root=y0 + 8, widget=ov.text))
-        ov._on_drag(types.SimpleNamespace(x_root=x0 + 120, y_root=y0 - 82, widget=ov.text))
+        ov._on_drag(types.SimpleNamespace(x_root=x0 + 20 + (tx - x0), y_root=y0 + 8 + (ty - y0),
+                                         widget=ov.text))
         root.update()
         ov.show({"jp": "テスト", "zh": "测试", "grammar": [], "vocab": [],
                  "notes": "", "meta": {}})
         root.update()
         x1, y1 = int(ov.win.winfo_x()), int(ov.win.winfo_y())
-        want = (x0 + 100, y0 - 90)
+        want = (tx, ty)
         ok_drag = (x1, y1) == want
         add(f"悬浮窗拖动 起点({x0},{y0}) 拖动后({x1},{y1}) 期望{want} "
             f"{'通过' if ok_drag else '失败：渲染把窗口拉回原位'}")
-        ov._on_release(types.SimpleNamespace(x_root=x0 + 120, y_root=y0 - 82))
+        ov._on_release(types.SimpleNamespace(x_root=x0 + 20 + (tx - x0),
+                                            y_root=y0 + 8 + (ty - y0)))
         saved = list(cfg.get("overlay_pos") or [0, 0])
         add(f"悬浮窗位置落盘 {saved} {'通过' if saved == [x1, y1] else '失败'}")
         ov.destroy()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import queue
+import re
 import threading
 import time
 
@@ -21,7 +22,7 @@ from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
 from .textutil import (
-    dedupe_key, display_join, has_japanese, is_meaningful, normalize, similar_key,
+    dedupe_key, display_join, has_japanese, is_meaningful, looks_japanese, normalize, similar_key,
     stable_key,
 )
 
@@ -31,6 +32,45 @@ log = logging.getLogger("galtl.pipeline")
 def _norm_pattern(s: str) -> str:
     """句型去重用的键：波浪号/空格写法各家模型不一致，先把它们抹平。"""
     return (s or "").replace("〜", "").replace("～", "").replace(" ", "").replace("　", "").strip()
+
+
+def _grammar_core(pattern: str) -> str:
+    """把「〜ては（〜ては？）」这类展示名还原成可在原句里查的核心字串。"""
+    s = (pattern or "").replace("〜", "").replace("～", "").replace("~", "")
+    s = re.sub(r"[（(][^）)]*[）)]", "", s)     # 去掉括号里的补充说明
+    return s.strip()
+
+
+def _gkey(pattern: str) -> str:
+    """语法点去重键：只取第一种写法（「〜ってば／〜ったら」→ ってば），好让模型条目压住本地占位。"""
+    core = _grammar_core(pattern)
+    for sep in ("／", "/", "、"):
+        core = core.split(sep)[0]
+    return _norm_pattern(core)
+
+
+def _filter_grammar(items: list[dict], jp_text: str, vocab_words: set[str]) -> list[dict]:
+    """丢掉「原句里根本没有」的语法点——模型偶尔会把「ってば」讲成「〜ては」「〜ば」。
+
+    判断依据只有两条硬事实：摘出的 form / 句型核心能不能在原句里找到；纯名词是不是
+    已经作为生词列出（那就不该再当语法点讲一遍）。
+    """
+    out: list[dict] = []
+    for it in items:
+        core = _grammar_core(it.get("pattern") or "")
+        form = str(it.get("form") or "").strip()
+        probe = form or core
+        if not probe:
+            continue
+        if core and core in vocab_words and len(core) <= 10:
+            continue                            # 单词被当成语法点
+        if probe in jp_text or (core and core in jp_text):
+            out.append(it)
+            continue
+        tail = core[-2:] if len(core) >= 2 else core
+        if tail and tail in jp_text:            # 允许「〜てしまう」讲成「ちゃった」这类活用
+            out.append(it)
+    return out
 
 
 def _one_line(zh: str) -> str:
@@ -231,8 +271,19 @@ class Engine:
                 )
                 engine = "vision:" + (self.cfg.get("vision_model") or kwargs["model"])
             else:
-                if not has_japanese(jp_text):
-                    raise llm.LlmError("没有识别到日文")
+                if not looks_japanese(jp_text):
+                    # 汉化版游戏的台词、系统菜单都是纯中文（没有假名），拿日语模型硬翻就会
+                    # 「牛头不对马嘴」。当噪声静默跳过；顺手入库，免得每次轮询都重判。
+                    skip = {"noise": True, "jp": jp_text, "kana": "", "zh": "",
+                            "literal": "", "grammar": [], "vocab": [], "notes": "",
+                            "meta": {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                                     "engine": "skip:no-japanese"}}
+                    if self.cfg.get("use_cache", True):
+                        try:
+                            self.store.put(jp_text, skip)
+                        except Exception:
+                            pass
+                    return skip
                 res = self._translate_two_phase(jp_text, kwargs, context, glossary, history)
                 engine = "text:" + kwargs["model"]
             self.stats["llm"] += 1
@@ -378,7 +429,7 @@ class Engine:
         并行发出后它的生成时间和翻译重叠，首条语法 1.4 秒就位。界面渲染仍由
         `_base_evt` 卡住——必须等译文那一帧上屏，否则会先弹出「只有语法没译文」的块。
         """
-        if not jp_text or not has_japanese(jp_text):
+        if not jp_text or not looks_japanese(jp_text):
             log.info("讲解预发起跳过：文本没有日文 %r", (jp_text or "")[:30])
             return
         if not self.cfg.has_key and (self.cfg.get("provider") != "ollama"):
@@ -478,10 +529,14 @@ class Engine:
             早先的做法是「拿到第一条模型语法就清空本地占位」，结果界面上从 2 条语法
             + 2 个生词瞬间掉到 1 条 + 0 个，看起来像退步。
             """
-            gkeys = {_norm_pattern(x.get("pattern", "")) for x in model_g}
-            vkeys = {(x.get("word") or "").strip() for x in model_v}
-            cur["grammar"] = list(model_g) + [
-                x for x in local_g if _norm_pattern(x.get("pattern", "")) not in gkeys
+            words = {(x.get("word") or "").strip() for x in model_v}
+            kept = _filter_grammar(model_g, jp_text, words)
+            if len(kept) != len(model_g):
+                log.info("讲解过滤：丢掉原句里对不上的语法点 %d 条", len(model_g) - len(kept))
+            gkeys = {_gkey(x.get("pattern", "")) for x in kept}
+            vkeys = words
+            cur["grammar"] = list(kept) + [
+                x for x in local_g if _gkey(x.get("pattern", "")) not in gkeys
             ]
             cur["vocab"] = list(model_v) + [
                 x for x in local_v if (x.get("word") or "").strip() not in vkeys
