@@ -14,6 +14,9 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    # tag 推送时要把 zip 挂到 Release，默认 token 只有只读权限，必须显式声明
+    permissions:
+      contents: write
     env:
       # 让 Python 在任何控制台代码页下都用 UTF-8 输出，避免中文/日文 print 把 CI 弄崩
       PYTHONUTF8: "1"
