@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 打包产物 ----
+build/
+dist/
+release/
+*.spec
+
+# ---- 运行期数据（含个人 API Key，绝不提交）----
+config.json
+config.local.json
+cache.db
+cache.db-journal
+cache.db-wal
+history.db
+history.db-journal
+history.db-wal
+galtl.log
+galtl.log.*
+selfcheck.txt
+*.log
+
+# ---- 本机生成/调试 ----
+assets/app_preview.png
+preview_*.png
+e2e_shot.png
+winicon_*.png
+exe_icon_dump.png
+.dsh-vision-router/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

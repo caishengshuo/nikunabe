@@ -1,0 +1,24 @@
+# 统一换行与编码，避免跨平台/跨编辑器把文件改坏
+* text=auto
+
+# Windows 专用：bat 必须 CRLF，否则 cmd 解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ocr_worker.ps1 必须逐字节保留（首 3 字节是 UTF-8 BOM）——Windows PowerShell 5.1 没有 BOM 时会按 GBK
+# 读中文注释并报 MissingEndCurlyBrace，程序里的 OCR 会直接变成 worker_dead。
+# 所以 ps1 一律不做任何换行/编码转换：
+*.ps1 -text
+
+*.md   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.txt  text eol=crlf
+
+*.png  binary
+*.ico  binary
+*.exe  binary
+*.zip  binary
+*.db   binary

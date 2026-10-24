@@ -1,0 +1,48 @@
+{
+  "mode": "ocr",
+  "region": [0, 0, 0, 0],
+  "poll_ms": 700,
+  "stable_reads": 2,
+  "upscale": 2.0,
+  "binarize": false,
+  "min_ratio": 0.35,
+
+  "ocr_engine": "winocr",
+  "ocr_lang": "ja",
+  "tesseract_exe": "tesseract",
+  "tesseract_lang": "jpn",
+
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com/v1",
+  "model": "deepseek-chat",
+  "api_key": "",
+  "vision_model": "",
+  "temperature": 0.3,
+  "max_tokens": 1200,
+  "timeout": 60,
+  "extra_headers": {},
+  "glossary": "",
+  "context_lines": 2,
+  "auto_translate": false,
+
+  "overlay_pos": [0, 0],
+  "overlay_width": 1100,
+  "overlay_alpha": 0.93,
+  "jp_size": 12,
+  "zh_size": 19,
+  "gram_size": 11,
+  "show_jp": true,
+  "show_kana": false,
+  "show_vocab": true,
+  "show_notes": true,
+  "overlay_locked": false,
+  "overlay_visible": true,
+  "font_jp": "Yu Gothic UI",
+  "font_zh": "Microsoft YaHei UI",
+  "theme": "dark",
+
+  "use_cache": true,
+  "cache_ttl_days": 0,
+
+  "hotkeys": true
+}

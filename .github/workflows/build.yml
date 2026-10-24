@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装打包依赖
+        run: python -m pip install --upgrade pip pyinstaller pillow
+
+      - name: 自检（导入 + 配置 + 语法库）
+        run: python -c "import galtl, galtl.app, galtl.pipeline; from galtl.grammar import RULES; print('version', galtl.__version__, 'rules', len(RULES))"
+
+      - name: 打包 exe
+        run: cmd /c build.bat
+
+      - name: 组装发布包
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path "galtl/__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $ver) { throw "读不到 galtl/__init__.py 里的 __version__" }
+          if ($env:GITHUB_REF -like "refs/tags/v*") { $ver = $env:GITHUB_REF -replace "refs/tags/v", "" }
+          $dir = "release/galgame-jp-helper-v$ver-win64"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "dist/galgame日语助手.exe" $dir
+          Copy-Item "使用说明.txt" $dir
+          Copy-Item "LICENSE" $dir
+          $zip = "release/galgame-jp-helper-v$ver-win64.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path "$dir/*" -DestinationPath $zip
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem release | Select-Object Name, Length | Format-Table -AutoSize
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galgame-jp-helper-win64
+          path: release/*.zip
+          if-no-files-found: error
+
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          generate_release_notes: true
+          body_path: 使用说明.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
