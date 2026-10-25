@@ -388,6 +388,10 @@ class Engine:
         res.pop("first_ms", None)
         if (res.get("meta") or {}).get("cut"):
             pass                                        # 半句：只显示、不入库
+        elif not (res.get("zh") or "").strip():
+            # 译文为空（模型超时、被拒或这行根本不是台词）：不写缓存。
+            # 否则下次命中就只剩语法/生词、中文一片空白，还会一直刷新。
+            log.info("译文为空，跳过入库：%s", (res.get("jp") or jp_text)[:40])
         elif self.cfg.get("use_cache", True):
             self.store.put(res.get("jp") or jp_text, res)
         self._last_result = res

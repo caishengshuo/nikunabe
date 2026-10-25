@@ -202,8 +202,12 @@ _UI_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 _UI_TIMER_RE = re.compile(r"\d+\s*分\s*\d+\s*秒|\d+\s*:\s*\d{2}\s*$")
+_UI_TIMER_TEXT_RE = re.compile(r"用[时時吋肘对對]\s*\d|耗[时時]\s*\d")
 _ASCII_RE = re.compile(r"[A-Za-z]")
 _KANA_ANY_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
+# 真正的假名：排除「・」（U+30FB）、「゠」（U+30A0）这类标点式片假名。
+# 实测「深度求索中,用吋10分46秒・・・」曾被当成台词——就因为末尾三个中点算作了假名。
+_KANA_REAL_RE = re.compile(r"[\u3041-\u3096\u30a1-\u30fa\u30fc-\u30ff]")
 _AT_CJK_RE = re.compile(r"[@＠]\s*[\u4e00-\u9fff]")
 _SYMBOL_RE = re.compile(r"[,，/／\\|｜@＠#＃~～^`]")
 
@@ -225,10 +229,14 @@ def looks_like_ui_noise(text: str) -> bool:
             return True
     if _AT_CJK_RE.search(t):
         return True
-    if _UI_TIMER_RE.search(t) and not _KANA_ANY_RE.search(t):
+    if _UI_TIMER_RE.search(t) and len(_KANA_REAL_RE.findall(t)) <= 1:
+        return True
+    # 「深度求索中,用吋10分46秒・・・」：OCR 连「时」都会读成「吋/肘」，
+    # 所以看「用时/耗时 + 数字」这个结构，而不是整词匹配。
+    if _UI_TIMER_TEXT_RE.search(t) and len(_KANA_REAL_RE.findall(t)) <= 1:
         return True
     letters = len(_ASCII_RE.findall(t))
-    kana = len(_KANA_ANY_RE.findall(t))
+    kana = len(_KANA_REAL_RE.findall(t))
     symbols = len(_SYMBOL_RE.findall(t))
     # 英文占比过半、假名又几乎没有：那是命令名/日志行，不是台词
     if letters >= 6 and letters > 2 * max(kana, 1) and kana <= 2:

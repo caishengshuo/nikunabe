@@ -64,6 +64,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if STATE["mode"] == "garbage":
             content = "好的，我来分析：\n```json\n" + json.dumps(FAKE, ensure_ascii=False) + ",\n```\n希望有帮助"
+        elif STATE["mode"] == "empty":
+            content = json.dumps({"zh": "", "literal": "", "grammar": [], "vocab": [], "notes": ""},
+                                 ensure_ascii=False)
         else:
             content = json.dumps(FAKE, ensure_ascii=False)
 
@@ -129,6 +132,17 @@ def main() -> int:
         print(f"{OK} 首次 engine={r1['meta']['engine']} {r1['meta']['ms']}ms；"
               f"二次 cached={bool(r2['meta'].get('cached'))} engine={r2['meta']['engine']}")
         print(f"{OK} store 统计 {store.stats()}")
+
+        # 译文为空时绝不能入库：否则下次命中只剩语法/生词、中文一片空白
+        # （实测「深度求索中,用吋10分46秒・・・」这类界面行就是这样被写进缓存的）
+        STATE["mode"] = "empty"
+        jp = "テスト用の空返答"
+        r3 = eng.translate(jp)
+        cached = store.get(jp, 0) if hasattr(store, "get") else None
+        if cached is None:
+            print(f"{OK} 空译文不入库（zh={r3.get('zh')!r}）")
+        else:
+            print(f"{BAD} 空译文被写进缓存：{cached}")
     finally:
         eng.close()
         store.close()
