@@ -169,7 +169,7 @@ print("7) 保存：录屏档 + 微软引擎同时落盘")
 if cb is not None:
     cb.current(1)
 try:
-    dlg._save()          # 内部会 cfg.update + save + destroy
+    dlg._save(verify=False)   # 只验落盘，不连网，免得测试卡在弹窗上
 except tk.TclError:
     pass
 if cb is not None:

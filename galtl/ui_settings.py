@@ -1,6 +1,7 @@
 """设置窗口：模型 / 抓取 / 显示 / 缓存与热键。"""
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -59,9 +60,15 @@ class SettingsDialog:
 
         bar = ttk.Frame(self.win)
         bar.pack(fill="x", padx=12, pady=(0, 12))
-        ttk.Button(bar, text="恢复默认", command=self._reset).pack(side="left")
-        ttk.Button(bar, text="取消", command=self.win.destroy).pack(side="right")
-        ttk.Button(bar, text="保存并应用", command=self._save).pack(side="right", padx=8)
+        self.btn_reset = ttk.Button(bar, text="恢复默认", command=self._reset)
+        self.btn_reset.pack(side="left")
+        self.btn_cancel = ttk.Button(bar, text="取消", command=self._close)
+        self.btn_cancel.pack(side="right")
+        self.btn_save = ttk.Button(bar, text="保存并应用", command=self._save)
+        self.btn_save.pack(side="right", padx=8)
+        self.lbl_verify = ttk.Label(bar, text="", foreground="#7a8494")
+        self.lbl_verify.pack(side="right", padx=10)
+        self._buttons = [self.btn_reset, self.btn_cancel, self.btn_save]
 
     def _tab_engine(self, nb):
         f = ttk.Frame(nb)
@@ -404,7 +411,7 @@ class SettingsDialog:
             self.cfg.set(k, v)
         messagebox.showinfo("已重置", "字段已恢复默认，点「保存并应用」生效。")
 
-    def _save(self):
+    def _save(self, verify: bool = True):
         patch = {k: v.get() for k, v in self.vars.items()}
         patch["glossary"] = self.e_gloss.get("1.0", "end").strip()
         patch["provider"] = getattr(self, "_provider_current", self.cfg.get("provider"))
@@ -420,4 +427,184 @@ class SettingsDialog:
         self.cfg.save()
         if self.on_saved:
             self.on_saved()
-        self.win.destroy()
+        if not verify:
+            self._close()
+            return
+        self._start_verify()
+
+    # ---------- 保存后的配置校验 ----------
+    def nb_select_engine(self) -> None:
+        """把 Notebook 切到「翻译引擎」页（截图脚本和手测都用得上）。"""
+        try:
+            self._nb.select(self._tab_engine)
+        except Exception:
+            pass
+
+    def _start_verify(self) -> None:
+        """配置已落盘，再在后台真连一次接口；结果出来后弹窗，成功才关窗。
+
+        放在线程里是因为：网络不好时一次请求能等到 20 秒，主线程卡住会让窗口
+        「未响应」，用户以为程序死了。
+        """
+        for b in getattr(self, "_buttons", []):
+            try:
+                b.state(["disabled"])
+            except Exception:
+                pass
+        try:
+            self.lbl_verify.configure(text="正在校验配置…", foreground="#7a8494")
+        except Exception:
+            pass
+        engine = self.var_engine.get() or "llm"
+        self._verify_result = None
+        self._verify_done = threading.Event()
+
+        def work():
+            try:
+                res = self._verify(engine)
+            except Exception as exc:                      # 校验自己崩了也要有交代
+                res = ("error", "校验时出错", f"{type(exc).__name__}: {exc}"
+                       "\n\n配置已经保存，可以先用着；方便的话把这行发给我。")
+            self._verify_result = res
+            self._verify_done.set()
+
+        threading.Thread(target=work, daemon=True).start()
+        # 结果由主线程轮询取回：Tk 的 after() 从子线程调用在没跑 mainloop 的场景
+        # （比如回归脚本里手动 update()）会静默失效，弹窗就永远不出现。
+        self._poll_verify()
+
+    def _poll_verify(self) -> None:
+        try:
+            if not self.win.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if self._verify_done.is_set():
+            level, title, body = self._verify_result or ("error", "校验未完成", "未知原因")
+            self._finish_verify(level, title, body)
+            return
+        try:
+            self.win.after(120, self._poll_verify)
+        except tk.TclError:
+            pass
+
+    def _finish_verify(self, level: str, title: str, body: str) -> None:
+        try:
+            self.lbl_verify.configure(text="")
+        except Exception:
+            pass
+        try:
+            if level == "ok":
+                messagebox.showinfo(title, body, parent=self.win)
+            elif level == "warn":
+                messagebox.showwarning(title, body, parent=self.win)
+            else:
+                messagebox.showerror(title, body, parent=self.win)
+        finally:
+            self._close()
+
+    def _verify(self, engine: str) -> tuple[str, str, str]:
+        """真连一次翻译接口，顺带检查几个明显不合理的配置项。
+
+        返回 (level, 标题, 正文)，level ∈ {ok, warn, error}。纯函数、不碰界面，
+        方便回归脚本直接调用。
+        """
+        notes: list[str] = []
+        cfg = self.cfg
+
+        # 明显不合理的数值：只提醒，不改用户的值
+        try:
+            poll = int(cfg.get("poll_ms", 250) or 0)
+            if poll < 100:
+                notes.append(f"自动翻译间隔 {poll}ms 偏小，识别会排队；建议 ≥150ms。")
+            up = float(cfg.get("upscale", 1.6) or 0)
+            if up < 1.0 or up > 3.0:
+                notes.append(f"放大倍数 {up} 超出 1.0~3.0，OCR 容易失真。")
+            mr = float(cfg.get("min_ratio", 0.3) or 0)
+            if mr < 0.1 or mr > 0.9:
+                notes.append(f"墨迹阈值 min_ratio={mr} 不在 0.1~0.9 之间。")
+        except Exception:
+            pass
+        region = cfg.region
+        if region[2] <= 0 or region[3] <= 0:
+            notes.append("还没框选字幕区域：回到主窗口按 F7 框住对话框的文字那块。")
+        if int(cfg.get("context_lines", 2) or 0) > 6:
+            notes.append("上文条数超过 6 会让每句更慢、更贵。")
+
+        tail = ("\n\n（以上选项都已经保存到 config.json，不影响你先用起来。）"
+                if notes else "")
+        note_block = ("\n\n另外：\n· " + "\n· ".join(notes)) if notes else ""
+
+        if engine == "ms":
+            key = (cfg.get("ms_key") or "").strip()
+            if not key:
+                msg = ("配置已保存。\n\n不过还没填「微软 Key」，现在只显示本地句型库的语法和生词，"
+                       "没有中文译文。\n去 Azure 门户 → 翻译器资源 → 密钥和终结点，把 KEY 1 粘进去，"
+                       "再点一次「保存并应用」就会自动校验。")
+                return "warn", "已保存，还没配微软翻译的 Key", msg + note_block
+            try:
+                from . import msmt
+
+                out = msmt.translate(
+                    "そんなに慌てなくても、まだ間に合うはずだよ。",
+                    key=key,
+                    region=cfg.get("ms_region") or "",
+                    endpoint=cfg.get("ms_endpoint") or msmt.DEFAULT_ENDPOINT,
+                    timeout=min(20, int(cfg.get("timeout", 20) or 20)),
+                )
+            except Exception as exc:
+                return ("error", "配置已保存，但微软翻译没连上",
+                        f"{exc}{note_block}{tail}")
+            body = (f"配置已保存，并且真的翻了一句：\n\n"
+                    f"日文：そんなに慌てなくても、まだ間に合うはずだよ。\n"
+                    f"中文：{out}\n\n"
+                    f"引擎：微软翻译（区域：{cfg.get('ms_region') or '全球'}）\n"
+                    f"语法与生词仍由本地句型库提供。")
+            return "ok", "配置已保存并通过校验", body + note_block
+
+        # 外部 API 模式
+        provider = cfg.get("provider") or "deepseek"
+        if not (cfg.get("model") or "").strip():
+            return ("error", "配置已保存，但模型名是空的",
+                    "「模型」页里的「文本模型」必须填，例如 deepseek-chat。" + note_block + tail)
+        if not (cfg.get("base_url") or "").strip():
+            return ("error", "配置已保存，但 base_url 是空的",
+                    "「模型」页里的 base_url 要填到 /v1 为止，例如 https://api.deepseek.com/v1。"
+                    + note_block + tail)
+        if not cfg.has_key and provider != "ollama":
+            return ("warn", "已保存，还没填 API Key",
+                    "现在只显示本地句型库的语法和生词，没有中文译文。\n"
+                    "到「模型」页填 API Key，再点一次「保存并应用」会自动校验；"
+                    "本地 Ollama / LM Studio 可以不填。" + note_block)
+        try:
+            kwargs = {
+                "base_url": cfg.get("base_url"),
+                "model": cfg.get("model"),
+                "api_key": cfg.get("api_key"),
+                "temperature": 0.0,
+                "max_tokens": 300,
+                "timeout": min(25, int(cfg.get("timeout", 60) or 25)),
+                "extra_headers": cfg.get("extra_headers") or {},
+            }
+            res = llm.analyze_text("そんなに慌てなくても、まだ間に合うはずだよ。", kwargs, context=[])
+        except Exception as exc:
+            return ("error", "配置已保存，但外部 API 没连上", f"{exc}{note_block}{tail}")
+        zh = (res or {}).get("zh") or ""
+        if not zh:
+            return ("error", "配置已保存，但模型没有返回译文",
+                    "接口通了，可是返回里没有中文。检查模型名是否支持对话补全，或换个模型试试。"
+                    + note_block + tail)
+        g = len((res or {}).get("grammar") or [])
+        v = len((res or {}).get("vocab") or [])
+        body = (f"配置已保存，并且真的翻了一句：\n\n"
+                f"日文：そんなに慌てなくても、まだ間に合うはずだよ。\n"
+                f"中文：{zh}\n\n"
+                f"引擎：{cfg.get('model')} @ {cfg.get('base_url')}\n"
+                f"同时返回：语法 {g} 条、重点词 {v} 个。")
+        return "ok", "配置已保存并通过校验", body + note_block
+
+    def _close(self) -> None:
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass
