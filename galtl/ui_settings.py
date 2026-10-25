@@ -219,6 +219,30 @@ class SettingsDialog:
         ttk.Label(f, text="中文字体").grid(row=8, column=0, sticky="w", padx=(12, 8), pady=6)
         ttk.Entry(f, textvariable=self._var("font_zh")).grid(row=8, column=1, sticky="ew")
 
+        # 覆盖原文 + 录屏/NVIDIA 录制：这块决定了「录出来的视频里有没有中文」
+        cap = ttk.LabelFrame(f, text="覆盖原文与录制")
+        cap.grid(row=9, column=0, columnspan=3, sticky="ew", padx=12, pady=10)
+        cap.columnconfigure(1, weight=1)
+        ttk.Label(cap, text="截图可见性").grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
+        cap_cb = ttk.Combobox(
+            cap, state="readonly", width=30,
+            values=[
+                "exclude（默认：录制里看不到中文）",
+                "record（录制里能看到中文）",
+                "off（永不对截屏隐藏）",
+            ],
+        )
+        _cur = str(self.cfg.get("cover_capture", "exclude") or "exclude").lower()
+        cap_cb.current({"exclude": 0, "record": 1, "off": 2}.get(_cur, 0))
+        self._capture_cb = cap_cb
+        cap_cb.grid(row=0, column=1, sticky="w")
+        ttk.Label(cap, text="想让 NVIDIA / OBS 录到中文，选 record；只自己看游戏、要录干净画面则保持 exclude。",
+                  wraplength=520, justify="left").grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        ttk.Checkbutton(cap, text="启动时自动开启覆盖原文",
+                        variable=self._var("cover_mode", "bool")).grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+
     def _tab_misc(self, nb):
         f = ttk.Frame(nb)
         nb.add(f, text="缓存与热键")
@@ -311,6 +335,9 @@ class SettingsDialog:
             if self._mode_cb.current() >= 0 else "ocr"
         patch["ocr_engine"] = self._ocr_cb.get() or "winocr"
         patch["theme"] = self._theme_cb.get() or "dark"
+        if getattr(self, "_capture_cb", None) is not None:
+            idx = self._capture_cb.current()
+            patch["cover_capture"] = {0: "exclude", 1: "record", 2: "off"}.get(idx, "exclude")
         self.cfg.update(patch)
         self.cfg.save()
         if self.on_saved:

@@ -357,8 +357,11 @@ class MainWindow:
         self.var_cover.set(on)
         if on:
             self.overlay.hide_window()
+            mode = getattr(self.cover, "capture_mode", "exclude")
             if not self.cfg.region:
                 self.set_status("覆盖原文：开 —— 但还没框选。按 F7 框住对话框文字区（覆盖层要贴着它）")
+            elif mode == "record":
+                self.set_status("覆盖原文：开 · 录制模式（NVIDIA/OBS 能录到中文，取词瞬间自动隐身）")
             elif getattr(self.cover, "excluded", False):
                 self.set_status("覆盖原文：开（译文盖住日文，日文仍能被读取，不影响自动翻译）")
             else:
@@ -438,6 +441,11 @@ class MainWindow:
             self.engine._ocr = None
         try:
             self.cover.apply_theme()
+        except Exception:
+            pass
+        # 截图可见性可能被改（exclude / record / off）：立刻生效，别等重启
+        try:
+            self.cover.set_capture_mode(self.cfg.get("cover_capture", "exclude"))
         except Exception:
             pass
         self.set_status("设置已应用")

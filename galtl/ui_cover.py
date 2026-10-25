@@ -60,6 +60,13 @@ class CoverWindow:
         self._dead = False                      # 关窗/退出后置位，之后不再碰 Tk
         self._enabled = bool(cfg.get("cover_mode", False))
         self.excluded = False
+        # cover_capture:
+        #   exclude（默认）—— 覆盖层永久对截屏/录制不可见：OCR 绝不会读到自己，
+        #                    但 NVIDIA/录屏软件录出来的是「没盖中文的原画面」。
+        #   record        —— 平时可见、只在取词那一瞬排除：录制里能看到中文，
+        #                    OCR 也不会读到自己（没有隐藏/显示动作，所以不闪）。
+        #   off           —— 永不排除（老系统不支持亲和时用），取词时靠隐身躲开。
+        self.capture_mode = self._read_capture_mode()
 
         bg = str(cfg.get("cover_bg", "") or "#0b0f16")
         fg = str(cfg.get("cover_fg", "") or "#ffffff")
@@ -91,8 +98,44 @@ class CoverWindow:
         self._hwnd = winapi.top_hwnd(win)
         # 点击穿透：盖住的地方照样能点游戏（存档、选项、快进）
         winapi.set_click_through(self._hwnd, True)
-        if bool(cfg.get("cover_exclude_capture", True)):
-            self.excluded = winapi.set_capture_excluded(self._hwnd, True)
+        self.excluded = self._apply_exclusion(at_rest=True)
+
+    # ---------- 截图排除（录制兼容） ----------
+    def _read_capture_mode(self) -> str:
+        mode = str(self.cfg.get("cover_capture", "") or "").strip().lower()
+        if mode in ("exclude", "record", "off"):
+            return mode
+        # 兼容老配置：cover_exclude_capture=false 等于 off
+        return "exclude" if bool(self.cfg.get("cover_exclude_capture", True)) else "off"
+
+    def _apply_exclusion(self, at_rest: bool) -> bool:
+        """按模式设置「对截屏/录制是否可见」，返回当前是否被排除。"""
+        if self.capture_mode == "exclude":
+            want = True
+        elif self.capture_mode == "record":
+            want = not at_rest          # 取词瞬间排除，平时可见（录制里才有中文）
+        else:
+            want = False
+        ok = winapi.set_capture_excluded(self._hwnd, want)
+        # 注意：SetWindowDisplayAffinity 成功即返回真，与「是否真的被排除」无关。
+        # 老代码把返回值直接当 excluded，导致 off 模式下 excluded 也变真，
+        # dip() 就会误以为「已经隐身」而不去 withdraw（NVIDIA 录制那条路走不通）。
+        self.excluded = bool(want and ok)
+        return self.excluded
+
+    def set_capture_mode(self, mode: str) -> str:
+        """运行时切换（改配置后调用）；返回生效的模式。"""
+        mode = (mode or "").strip().lower()
+        if mode not in ("exclude", "record", "off"):
+            return self.capture_mode
+        self.capture_mode = mode
+        self.cfg.data["cover_capture"] = mode
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._apply_exclusion(at_rest=True)
+        return self.capture_mode
 
     # ---------- 状态 ----------
     @property
@@ -171,9 +214,16 @@ class CoverWindow:
             self.hide()
         return self._enabled
 
-    # ---------- 系统不支持排除时：取样瞬间隐身 ----------
+    # ---------- 取词瞬间：让截图看不到自己 ----------
     def dip(self, on: bool) -> None:
-        if self.excluded or not self._visible:
+        if self._dead or not self._visible:
+            return
+        if self.capture_mode == "record":
+            # 不隐藏窗口、也不挪位置：只切换显示亲和。人眼毫无变化，
+            # 但取词那一帧截图看不到中文；其余时间录制软件能录到中文。
+            self._apply_exclusion(at_rest=not on)
+            return
+        if self.excluded:
             return
         if on and not self._dipped:
             self.win.withdraw()
@@ -196,9 +246,18 @@ class CoverWindow:
         """把游戏对话框的底色采样过来——这样盖上去的中文块不会有「色差补丁」感。"""
         if not self._rect or not bool(self.cfg.get("cover_match_bg", True)):
             return
+        restore = False
         if self._visible and not self.excluded:
-            return          # 自己没被排除在截图外时，取样会拍到自己的中文
-        col = _median_ring_color(self._rect)
+            if self.capture_mode != "record":
+                return          # 自己没被排除在截图外时，取样会拍到自己的中文
+            # record 模式：平时不排除，取样这一瞬排一下再恢复，否则采到的是自己的底板
+            self._apply_exclusion(at_rest=False)
+            restore = True
+        try:
+            col = _median_ring_color(self._rect)
+        finally:
+            if restore:
+                self._apply_exclusion(at_rest=True)
         if not col:
             return
         self._bg_color = col

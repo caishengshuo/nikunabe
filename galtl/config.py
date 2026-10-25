@@ -72,6 +72,7 @@ DEFAULTS: dict[str, Any] = {
     "cover_align": "center",
     "cover_min_size": 12,
     "cover_exclude_capture": True,  # 让自己不被截图拍到（零闪烁的关键）
+    "cover_capture": "exclude",     # exclude=永久隐藏于截图 / record=仅取词瞬间隐藏（录制能录到中文）/ off=永不隐藏
     "font_jp": "Yu Gothic UI",
     "font_zh": "Microsoft YaHei UI",
     "theme": "dark",               # dark | light
@@ -114,6 +115,10 @@ class Config:
             if self.path.exists():
                 raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 self.data = _merge(DEFAULTS, raw)
+                # 老配置迁移（1.0.18）：以前只有一个开关 cover_exclude_capture。
+                # 它= false 意味着「覆盖层对截屏可见」，等价于新的 cover_capture="off"。
+                if "cover_capture" not in raw and raw.get("cover_exclude_capture") is False:
+                    self.data["cover_capture"] = "off"
                 self._original = copy.deepcopy(self.data)
                 self._mtime = self._disk_mtime()
         except Exception as exc:  # 配置损坏不该阻止启动
