@@ -22,8 +22,9 @@ from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
 from .textutil import (
-    canon_punct, dedupe_key, display_join, has_japanese, is_meaningful, is_punct_only,
-    looks_japanese, normalize, similar_key, strip_nameplate,
+    canon_punct, dedupe_key, display_join, has_japanese, is_meta_reply, is_meaningful,
+    is_punct_only, looks_japanese, looks_like_ui_noise, normalize, pick_dialogue_line,
+    similar_key, strip_nameplate,
     stable_key,
 )
 
@@ -33,6 +34,10 @@ log = logging.getLogger("galtl.pipeline")
 def _norm_pattern(s: str) -> str:
     """句型去重用的键：波浪号/空格写法各家模型不一致，先把它们抹平。"""
     return (s or "").replace("〜", "").replace("～", "").replace(" ", "").replace("　", "").strip()
+
+
+# 敬称/后缀：出现在乱码里会被当语法点（实测「さん』」→「语法：さん」），一律不算语法。
+_NOT_GRAMMAR_CORES = {"さん", "ちゃん", "くん", "君", "氏", "様", "さま", "殿", "どの"}
 
 
 def _grammar_core(pattern: str) -> str:
@@ -62,6 +67,12 @@ def _filter_grammar(items: list[dict], jp_text: str, vocab_words: set[str]) -> l
         form = str(it.get("form") or "").strip()
         probe = form or core
         if not probe:
+            continue
+        # 「さん」「ちゃん」这类是敬称后缀，不是语法点。早先它们在乱码
+        # （「さん』」）上命中过，界面上就出现「语法：さん」。
+        if core in _NOT_GRAMMAR_CORES:
+            continue
+        if len(core) < 2 and len(form) < 2:
             continue
         if core and core in vocab_words and len(core) <= 10:
             continue                            # 单词被当成语法点
@@ -225,6 +236,9 @@ class Engine:
         lines = self.ocr().recognize_png(png)
         merged = merge_lines(lines)
         text = strip_nameplate(normalize(display_join(merged)))
+        # OCR 会把「上一句的尾巴 / 任务栏 / 聊天窗口」一起读进来，拼成多行乱码。
+        # 多行时只留最像台词的那一行（假名最多），整段送去翻译只会得到胡说八道。
+        text = pick_dialogue_line(text)
         if not text and bool(self.cfg.get("punct_fallback", True)) and png:
             # Windows OCR 对孤立的「………」一个字符都不给。这时看墨迹形状：
             # 一串大小相近、垂直居中的小点，就按省略号处理，别让画面空着。
@@ -282,15 +296,32 @@ class Engine:
             self._last_result = res
             return res
 
+        if looks_like_ui_noise(jp_text):
+            # 「任务栏、调用指令、@文件或对话」「laltl\winapi..py」「用时 11 分 57 秒……」
+            # 这些是别的窗口被 OCR 进来了。翻译它们毫无意义，还会被写进缓存反复显示，
+            # 所以直接拒掉、不入库；主窗口状态栏顺带提醒用户重新框选。
+            skip = {"noise": True, "jp": jp_text, "kana": "", "zh": "",
+                    "literal": "", "grammar": [], "vocab": [], "notes": "",
+                    "meta": {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                             "engine": "skip:ui-noise"}}
+            self.emit("status", "框选区里有界面文字（不是游戏台词）：按 F7 只框对话框文字区")
+            self._last_result = skip
+            return skip
+
         if self.cfg.get("use_cache", True):
             hit = self.store.get(jp_text, int(self.cfg.get("cache_ttl_days", 0) or 0))
             if hit:
-                hit["zh"] = _one_line(hit.get("zh") or "")
-                self.stats["cache"] += 1
-                hit["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
-                               "cached": True, "engine": "cache"}
-                self._last_result = hit
-                return hit
+                if is_meta_reply(hit.get("zh") or ""):
+                    # 早期版本把模型的推脱话当译文存进了库，命中时直接当脏数据清掉重翻
+                    self.store.delete(jp_text)
+                    hit = None
+                else:
+                    hit["zh"] = _one_line(hit.get("zh") or "")
+                    self.stats["cache"] += 1
+                    hit["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                                   "cached": True, "engine": "cache"}
+                    self._last_result = hit
+                    return hit
 
         if not self.cfg.has_key and (self.cfg.get("provider") != "ollama"):
             # 无 Key：本地降级（仍给语法提示），不报错
@@ -330,6 +361,18 @@ class Engine:
 
         if res.get("noise"):
             res["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1), "engine": engine}
+            return res
+
+        if is_meta_reply(res.get("zh") or ""):
+            # 模型把「这看起来不是日文台词…我无法翻译」当译文返回了。绝不能入库
+            # （一旦入库，每次轮询都会把这句话当翻译显示）。
+            log.warning("模型返回的是推脱/解释，已丢弃：%s", (res.get("zh") or "")[:60])
+            self.emit("status", "这一帧没认出日文台词（可能是界面文字或 OCR 噪声）")
+            res = {"noise": True, "jp": jp_text, "kana": "", "zh": "",
+                   "literal": "", "grammar": [], "vocab": [], "notes": "",
+                   "meta": {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                            "engine": "reject:meta"}}
+            self._last_result = res
             return res
 
         # 模型没给语法时用本地库兜底；给了就补上等级缺失

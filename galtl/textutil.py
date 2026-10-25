@@ -186,3 +186,108 @@ def strip_nameplate(text: str) -> str:
         return "\n".join(out).strip()
     return text
 
+
+# ---------- 非台词内容（UI/调试文字/别的窗口） ----------
+# 用户把框选区拉得偏大，或者游戏最小化后 OCR 抓到任务栏、聊天窗口、报错弹窗，
+# 这些东西会被当成台词翻出来（实测缓存里出现过「任务栏、调用指令、@文件或对话」
+# 「用时 11 分 57 秒……」「laltl\winapi..py」）。它们有几个稳定的特征：
+# 文件路径、英文动词开头的命令名、耗时统计、@ 后面跟中文界面词。
+_UI_FRAGMENTS = (
+    "@文件", "调用指令", "凋用指令", "任务栏", "工具箱", "任务看板", "记忆宫殿",
+    "完全权限", "深度求索", "缓存命中", "命中", "tokens", " tok ", "tok/s",
+    "耗时", "用时", "指令", "文件或对话", "分支", "仓库", "构建", "回归",
+)
+_UI_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:\\|\\\\|\.(?:py|exe|log|json|yml|yaml|db|ps1|bat|md)\b|\bdist\b)",
+    re.IGNORECASE,
+)
+_UI_TIMER_RE = re.compile(r"\d+\s*分\s*\d+\s*秒|\d+\s*:\s*\d{2}\s*$")
+_ASCII_RE = re.compile(r"[A-Za-z]")
+_KANA_ANY_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
+_AT_CJK_RE = re.compile(r"[@＠]\s*[\u4e00-\u9fff]")
+_SYMBOL_RE = re.compile(r"[,，/／\\|｜@＠#＃~～^`]")
+
+
+def looks_like_ui_noise(text: str) -> bool:
+    """判断这段文字是不是「界面上别的东西」而不是游戏台词。
+
+    OCR 连界面文字也会读歪（「调用指令」→「凋用指令」、「@文件或对话」→「,@文件或対活」），
+    所以判据不能只靠整词匹配，还要看结构：@ 后面跟汉字、时间统计、路径、符号密度。
+    """
+    t = normalize(text)
+    if not t:
+        return False
+    if _UI_PATH_RE.search(t):
+        return True
+    low = t.lower()
+    for frag in _UI_FRAGMENTS:
+        if frag.lower() in low:
+            return True
+    if _AT_CJK_RE.search(t):
+        return True
+    if _UI_TIMER_RE.search(t) and not _KANA_ANY_RE.search(t):
+        return True
+    letters = len(_ASCII_RE.findall(t))
+    kana = len(_KANA_ANY_RE.findall(t))
+    symbols = len(_SYMBOL_RE.findall(t))
+    # 英文占比过半、假名又几乎没有：那是命令名/日志行，不是台词
+    if letters >= 6 and letters > 2 * max(kana, 1) and kana <= 2:
+        return True
+    if re.search(r"[A-Za-z]{8,}", t) and kana <= 1:
+        return True
+    # OCR 读歪的界面行：几乎没有假名，符号和汉字混在一起（「イ壬勞,/凋用…」）
+    if kana <= 1 and symbols >= 2 and len(t) >= 6:
+        return True
+    return False
+
+
+_META_REPLY_HINTS = (
+    "无法翻译", "不是日文", "不是日语", "请提供", "看起来不是",
+    "没有可翻译", "抱歉", "作为 AI", "作为AI", "我无法", "这段文字",
+)
+
+
+def is_meta_reply(zh: str) -> bool:
+    """模型的推脱/解释被当成译文（实测被写进缓存，从此每次显示「我无法翻译」）。"""
+    t = normalize(zh)
+    if not t:
+        return False
+    hits = sum(1 for h in _META_REPLY_HINTS if h in t)
+    if hits >= 2:
+        return True
+    if hits == 1 and len(t) > 24:
+        return True
+    return False
+
+
+def pick_dialogue_line(text: str) -> str:
+    """多行里挑出真正那句台词（保留换行续写，只丢明显是别的东西的行）。
+
+    OCR 常把上一句的尾巴、任务栏、聊天窗口一起读进来，拼成
+    「我猛地坐了起来…\\n飛ひ起きた俺は、前に座っている運転手に返事をする。」这种。
+    但一句台词被排版折成两行时（「…心配だよ……」/「まったく。」）两行都得留。
+    所以按假名数过滤：假名数不到最佳行 40% 的丢掉，其余按原顺序拼回去。
+    """
+    lines = [ln.strip() for ln in (text or "").replace("\r", "").split("\n") if ln.strip()]
+    if len(lines) <= 1:
+        return (lines[0] if lines else "").strip()
+
+    def kana(ln: str) -> int:
+        return len(_KANA_ANY_RE.findall(ln))
+
+    best = max(kana(ln) for ln in lines)
+    if best <= 0:
+        return max(lines, key=len).strip()
+
+    def keep_line(ln: str) -> bool:
+        k = kana(ln)
+        if k >= max(2, int(best * 0.4)):
+            return True
+        # 「まったく。」这种折行尾巴：短、纯日文、没有英文/路径，得留下
+        if len(ln) <= 10 and k >= 1 and jp_ratio(ln) >= 0.8 and not _ASCII_RE.search(ln):
+            return True
+        return False
+
+    keep = [ln for ln in lines if keep_line(ln)]
+    return "\n".join(keep).strip()
+

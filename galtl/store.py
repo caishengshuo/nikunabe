@@ -80,6 +80,42 @@ class Store:
             except Exception as exc:
                 log.debug("缓存写失败：%s", exc)
 
+    def delete(self, jp: str) -> None:
+        """删掉一条缓存（命中发现是脏数据时用，比如早期存进去的「我无法翻译」）。"""
+        key = dedupe_key(jp)
+        if not key:
+            return
+        with self._lock:
+            try:
+                self._db().execute("DELETE FROM lines WHERE key=?", (key,))
+                self._db().commit()
+            except Exception as exc:
+                log.debug("缓存删失败：%s", exc)
+
+    def purge(self, predicate) -> int:
+        """按谓词清理缓存，返回删掉的行数（升级后一次性洗掉历史脏数据用）。"""
+        removed = 0
+        with self._lock:
+            try:
+                rows = self._db().execute("SELECT jp,payload FROM lines").fetchall()
+                for jp, payload in rows:
+                    try:
+                        data = json.loads(payload)
+                    except Exception:
+                        data = {}
+                    try:
+                        bad = bool(predicate(jp, data))
+                    except Exception:
+                        bad = False
+                    if bad:
+                        self._db().execute("DELETE FROM lines WHERE jp=?", (jp,))
+                        removed += 1
+                if removed:
+                    self._db().commit()
+            except Exception as exc:
+                log.debug("缓存清理失败：%s", exc)
+        return removed
+
     def stats(self) -> dict:
         with self._lock:
             try:
