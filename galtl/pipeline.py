@@ -17,14 +17,14 @@ import threading
 import time
 
 from . import grammar as grammar_mod
-from . import inkprobe, llm, msmt, vocab as vocab_mod, winapi
+from . import glyphocr, inkprobe, llm, msmt, vocab as vocab_mod, winapi
 from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
 from .textutil import (
     canon_punct, dedupe_key, display_join, has_japanese, is_meta_reply, is_meaningful,
-    is_punct_only, looks_japanese, looks_like_ui_noise, normalize, pick_dialogue_line,
-    similar_key, strip_nameplate,
+    is_punct_only, is_single_kana, looks_japanese, looks_like_ui_noise, normalize,
+    pick_dialogue_line, similar_key, strip_nameplate,
     stable_key,
 )
 
@@ -110,6 +110,9 @@ class Engine:
         self.store = store
         self.events = events
         self._ocr = None
+        # 单字兜底要渲染 5 种字体的假名模板（约 200ms）。提前在后台烘好，
+        # 别等真的遇到「ん」那一帧才卡一下。
+        threading.Thread(target=self._warm_glyphs, name="glyph-atlas", daemon=True).start()
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
         self._busy = threading.Event()
@@ -184,6 +187,13 @@ class Engine:
 
     def status(self, text: str) -> None:
         self.emit("status", text)
+
+    def _warm_glyphs(self) -> None:
+        """后台预热单字模板库（失败也不影响主流程）。"""
+        try:
+            glyphocr.build_atlas()
+        except Exception:
+            log.debug("单字模板库预热失败", exc_info=True)
 
     # ---------- OCR ----------
     def set_overlay_rect(self, fn) -> None:
@@ -280,6 +290,17 @@ class Engine:
         # OCR 会把「上一句的尾巴 / 任务栏 / 聊天窗口」一起读进来，拼成多行乱码。
         # 多行时只留最像台词的那一行（假名最多），整段送去翻译只会得到胡说八道。
         text = pick_dialogue_line(text)
+        if not text and png:
+            # Windows OCR 对「一整句只有一个假名」无能为力（实测 ん/っ/あ 全部返回空），
+            # 这时不走文字识别，改看字形：画面里只有一个墨迹团时做模板匹配。
+            if bool(self.cfg.get("glyph_fallback", True)):
+                ch, conf = glyphocr.recognize(png)
+                if ch:
+                    text = ch
+                    gh = glyphocr.glyph_height_px(png)
+                    if gh >= 6:
+                        self._glyph_px = gh
+                    self.emit("status", f"这一句只有一个「{ch}」，是按字形认出来的（置信差 {conf:.3f}）")
         if not text and bool(self.cfg.get("punct_fallback", True)) and png:
             # Windows OCR 对孤立的「………」一个字符都不给。这时看墨迹形状：
             # 一串大小相近、垂直居中的小点，就按省略号处理，别让画面空着。
@@ -919,8 +940,13 @@ class Engine:
             self._seen = None
             return None
 
-        if mode == "ocr" and not is_punct_only(jp_text) and not is_meaningful(
-            jp_text, min_ratio=float(self.cfg.get("min_ratio", 0.35))
+        if (
+            mode == "ocr"
+            and not is_punct_only(jp_text)
+            and not is_single_kana(jp_text)      # 「ん」「っ」这种一个字就是一整句
+            and not is_meaningful(
+                jp_text, min_ratio=float(self.cfg.get("min_ratio", 0.35))
+            )
         ):
             # 别静默丢弃：用户看到的只是「自动翻译没反应」，无从判断是框选不对还是参数太严
             now = time.time()

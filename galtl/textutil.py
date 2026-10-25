@@ -145,6 +145,17 @@ _ELLIPSIS_RE = re.compile(r"(?:\.{2,}|。{2,}|…+|‥+|・{3,}|⋯+)")
 _DASH_RUN_RE = re.compile(r"[ー―─\-]{2,}")
 
 
+# 会「一个字就是一整句」的假名：galgame 里角色只应一声（ん／っ／あ）或一个
+# 片假名感叹。收窄到这个集合，避免把误认出来的单字噪声也当台词送翻译。
+_SINGLE_KANA_OK = set("んっッツあいうえおふはへほむよやンアイウエオー")
+
+
+def is_single_kana(text: str) -> bool:
+    """整句只有一个假名（「ん」「っ」「あ」这类）。"""
+    body = [c for c in (text or "") if not c.isspace()]
+    return len(body) == 1 and body[0] in _SINGLE_KANA_OK
+
+
 def is_punct_only(text: str) -> bool:
     """整句只有标点/符号/空白（没有假名、汉字、字母、数字）。"""
     body = [c for c in (text or "") if not c.isspace()]

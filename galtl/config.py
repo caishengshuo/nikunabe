@@ -22,6 +22,7 @@ DEFAULTS: dict[str, Any] = {
     "upscale": 2.0,                # OCR 前放大倍数
     "binarize": False,             # Otsu 二值化（花屏/低对比时可开）
     "punct_fallback": True,      # OCR 读不出字但有「一串点」时，当成省略号
+    "glyph_fallback": True,      # OCR 读不出单字台词（ん/っ）时，按字形模板认一个字
     "min_ratio": 0.35,             # 日文字符占比阈值，低于此视作 UI 噪声
     # ---- 延迟（两段式）----
     "stream_translate": True,      # 译文边生成边显示（首字通常 0.3~0.8s 就出来）
