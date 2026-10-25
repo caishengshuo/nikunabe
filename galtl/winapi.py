@@ -445,6 +445,52 @@ def move_window(hwnd: int, x: int, y: int, w: int, h: int) -> None:
     )
 
 
+def keep_above(hwnd: int) -> bool:
+    """把窗口重新提到「置顶」队首，但不夺焦点、不动位置尺寸。
+
+    为什么需要反复调用：置顶窗口之间也有先后。游戏一被激活（点一下画面、
+    全屏时按 alt-tab 回来），它就把自己提到队首，我们的覆盖层就被压在下面——
+    现象就是「一点游戏，中文就被盖住了」。每次游戏抢到前台后重提一次即可。
+    """
+    try:
+        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        ok = user32.SetWindowPos(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_void_p(HWND_TOPMOST & 0xFFFFFFFFFFFFFFFF),
+            0, 0, 0, 0, flags,
+        )
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def is_fullscreen_window(hwnd: int) -> bool:
+    """窗口是否铺满它所在的那块显示器（判断「独占全屏 / 无边框全屏」用）。"""
+    if not hwnd:
+        return False
+    rect = window_rect(hwnd)
+    if not rect:
+        return False
+    try:
+        MONITOR_DEFAULTTONEAREST = 2
+        mon = user32.MonitorFromWindow(ctypes.c_void_p(int(hwnd)), MONITOR_DEFAULTTONEAREST)
+        if not mon:
+            return False
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT),
+                        ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(ctypes.c_void_p(mon), ctypes.byref(mi)):
+            return False
+        r = mi.rcMonitor
+        x1, y1, x2, y2 = rect
+        return (x1 <= r.left and y1 <= r.top
+                and x2 >= r.right and y2 >= r.bottom)
+    except Exception:
+        return False
+
+
 def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     """窗口在屏幕上的 (x1, y1, x2, y2)；失败返回 None。"""
     class RECT(ctypes.Structure):

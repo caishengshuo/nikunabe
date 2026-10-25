@@ -179,12 +179,22 @@ class CoverWindow:
             self._render(self._text)
 
     # ---------- 显示 ----------
+    def raise_above(self) -> None:
+        """把覆盖层重新提到置顶队首（游戏抢到前台后会被压下去，靠这个顶回来）。"""
+        if self._dead or not self._visible or self._dipped:
+            return
+        try:
+            winapi.keep_above(self._hwnd)
+        except Exception:
+            pass
+
     def show(self, zh: str, glyph_px: float = 0.0) -> None:
         zh = (zh or "").strip()
         if not self._enabled or not self._rect or not zh:
             self.hide()
             return
         if zh == self._text and self._visible and not self._dipped and abs(glyph_px - self._glyph_px) < 0.5:
+            self.raise_above()          # 同一句也可能被游戏盖住了，顺手顶回来
             return
         changed = zh != self._text
         self._text = zh
@@ -195,6 +205,7 @@ class CoverWindow:
             self.win.deiconify()
             self.win.lift()
             self._visible = True
+            self.raise_above()
             if changed:
                 self._fade_in()
 
@@ -310,6 +321,7 @@ class CoverWindow:
         except tk.TclError:
             return
         winapi.place_window(self._hwnd, x, y, w, h, topmost=True)
+        winapi.keep_above(self._hwnd)
 
     def _render(self, zh: str) -> None:
         if self._dead:

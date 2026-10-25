@@ -36,6 +36,7 @@ class MainWindow:
         self.events = events
         self.hk_queue: "queue.Queue[str]" = queue.Queue()
         self._manual_busy = False
+        self._closing = False
         self._hotkeys: winapi.HotkeyThread | None = None
 
         self.root.title(f"{APP_NAME} v{__version__}")
@@ -70,6 +71,7 @@ class MainWindow:
             self.cfg.save()
         self.root.after(80, self._pump)
         self.root.after(300, self._first_hint)
+        self.root.after(1200, self._cover_keepalive)
         if self.cfg.get("auto_translate"):
             # 上次退出时「自动」是开着的，这次启动就直接跑起来。
             # 以前只在勾选框/F8 里启动，配置里写着自动、实际却没跑——用户看到的就是
@@ -361,9 +363,15 @@ class MainWindow:
         self.var_cover.set(on)
         if on:
             self.overlay.hide_window()
+            self._cover_keepalive()
             mode = getattr(self.cover, "capture_mode", "exclude")
             if not self.cfg.region:
                 self.set_status("覆盖原文：开 —— 但还没框选。按 F7 框住对话框文字区（覆盖层要贴着它）")
+            elif self._game_is_fullscreen():
+                self.set_status(
+                    "覆盖原文：开 —— 游戏正铺满全屏。独占全屏下 Windows 不允许任何窗口盖上去，"
+                    "若看不到中文，把游戏画面设置改成「窗口化」或「无边框窗口」"
+                )
             elif mode == "record":
                 self.set_status("覆盖原文：开 · 录制模式（NVIDIA/OBS 能录到中文，取词瞬间自动隐身）")
             elif getattr(self.cover, "excluded", False):
@@ -373,6 +381,33 @@ class MainWindow:
         else:
             self.overlay.show_window()
             self.set_status("覆盖原文：关（恢复底部字幕条）")
+
+    def _game_is_fullscreen(self) -> bool:
+        """游戏窗口是否铺满整块屏幕（全屏时任何覆盖层都盖不上去）。"""
+        try:
+            hwnd = int(getattr(self.engine, "_game_hwnd", 0) or 0)
+            return bool(hwnd) and winapi.is_fullscreen_window(hwnd)
+        except Exception:
+            return False
+
+    def _cover_keepalive(self) -> None:
+        """每 1 秒把覆盖层重新顶到最上面。
+
+        置顶窗口之间也有先后：游戏一被激活（点画面、alt-tab 回来）就把自己提到队首，
+        覆盖层随之被压在下面——现象就是「一点游戏，中文就被盖住」。这里轮询重提，
+        只在真正需要时（覆盖层可见且前台不是自己）才调用，开销是一次 SetWindowPos。
+        """
+        if self._closing:
+            return
+        try:
+            if self.cover.visible and self._last_zh:
+                self.cover.raise_above()
+        except Exception:
+            pass
+        try:
+            self.root.after(1000, self._cover_keepalive)
+        except Exception:
+            pass
 
     def toggle_lock(self) -> None:
         self.cfg.set("overlay_locked", bool(self.var_lock.get()))
@@ -584,6 +619,7 @@ class MainWindow:
 
     # ---------- 关闭 ----------
     def on_close(self) -> None:
+        self._closing = True
         try:
             self.cfg.set("auto_translate", bool(self.var_auto.get()))
             self.cfg.save()
