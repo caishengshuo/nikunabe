@@ -58,6 +58,7 @@ class MainWindow:
         self.cover = CoverWindow(self.root, cfg)
         self.engine.cover = self.cover
         self._last_zh = ""          # 最近一次译文：换区域/开关覆盖时用来立刻重画
+        self._shown_seq = 0         # 已经上屏的句子号：比它旧的流式增量直接丢（防两句译文闪动）
         self.cover.set_rect(self.cfg.region)
         if self.cfg.get("cover_mode"):
             self.overlay.hide_window()   # 覆盖模式下默认收起底部字幕条，画面干净
@@ -483,6 +484,13 @@ class MainWindow:
             if kind == "result":
                 self._show_result(data)
             elif kind == "partial":
+                # 上一句的流式残片不许上屏：seq 比当前已显示的更旧就直接丢掉。
+                # 否则「玩家已经翻到下一句，上一句的最后几个字才流回来」，
+                # 屏幕就在两句不同译文之间来回闪。
+                seq = data.get("seq")
+                if seq is not None and self._shown_seq and int(seq) < int(self._shown_seq):
+                    log.debug("丢弃过期增量 seq=%s 当前=%s", seq, self._shown_seq)
+                    continue
                 self.overlay.show_partial(data)
                 if data.get("zh"):
                     self.cover.show(data["zh"], getattr(self.engine, "_glyph_px", 0.0))   # 边译边盖：不用等整句
@@ -512,6 +520,9 @@ class MainWindow:
         self.overlay.show(res)
         self._last_zh = res.get("zh") or ""
         self.cover.show(self._last_zh, getattr(self.engine, "_glyph_px", 0.0))
+        seq = (res.get("meta") or {}).get("seq")
+        if seq is not None:
+            self._shown_seq = int(seq)      # 之后比它更旧的流式残片一律丢掉
         # 语法讲解是异步补上的：同一句要「替换」上一块，不能又追加一遍
         jp = (res.get("jp") or res.get("jp_ocr") or "").strip()
         replace = bool(res.get("enrich")) and jp == getattr(self, "_last_block_jp", None)

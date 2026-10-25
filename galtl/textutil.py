@@ -108,9 +108,27 @@ def similar_key(a: str, b: str, threshold: float = 0.9) -> bool:
     la, lb = len(a), len(b)
     if la < 4 or lb < 4:
         return False
+    # 包含关系：同一句台词「被截断」时（打字机没打完、末尾被闪烁的 ▼ 盖住）短版
+    # 会长在长版里。但「太短的片段」不足以证明是同一句（8 个字对 20 个字），
+    # 所以要求短边至少 10 字、且不低于长边一半。
+    if a in b or b in a:
+        short = min(la, lb)
+        if short >= 10 and short / max(la, lb) >= 0.5:
+            return True
+        if short < 10:
+            return False
     if abs(la - lb) > max(2, int(0.25 * max(la, lb))):
         return False
-    if a in b or b in a:
+    # 前缀覆盖率：OCR 把末尾几个字读成噪声（「ていなか」→「ていなガ0干恋万花」）时，
+    # 两串前缀完全一致、只有尾部不同。字面相似度会被尾部噪声拉低，
+    # 而「同一条台词」的判定更应该看开头是否一致（长度差已在上面的门里限制住）。
+    n = min(la, lb)
+    common = 0
+    for i in range(n):
+        if a[i] != b[i]:
+            break
+        common = i + 1
+    if n >= 8 and common / n >= 0.7:
         return True
     return difflib.SequenceMatcher(None, a, b).quick_ratio() >= threshold
 

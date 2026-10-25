@@ -164,7 +164,7 @@ class Engine:
         zh = _one_line((zh or "").strip())
         self.stats["llm"] += 1
         elapsed = round((time.perf_counter() - t0) * 1000, 1)
-        self.emit("partial", {"jp": jp_text, "zh": zh, "ms": elapsed})
+        self.emit("partial", {"jp": jp_text, "zh": zh, "ms": elapsed, "seq": self._seq})
         return {
             "noise": False,
             "jp": jp_text,
@@ -502,6 +502,7 @@ class Engine:
                             "jp": jp_text,
                             "zh": "".join(acc).strip(),
                             "ms": round((now - t0) * 1000),
+                            "seq": self._seq,
                         })
                 zh = "".join(acc).strip()
             except llm.LlmError as exc:
@@ -542,6 +543,7 @@ class Engine:
 
         if bool(self.cfg.get("grammar_phase", True)):
             self.emit("partial", {"jp": jp_text, "zh": zh, "stage": "grammar",
+                                  "seq": self._seq,
                                   "ms": round((time.perf_counter() - t0) * 1000)})
             if bool(self.cfg.get("grammar_async", True)):
                 # 异步补讲解：不让第二轮请求（2~3s）堵住主循环，否则下一句台词要排队等着
@@ -936,6 +938,20 @@ class Engine:
         same = key == self._last_key or similar_key(key, self._last_key)
         if not same and len(key) >= 12 and len(self._last_key) >= 12:
             same = similar_key(key, self._last_key, threshold=0.72)
+        if not same and self._last_key:
+            # 同一句台词被 OCR 读长/读短是常态（打字机、末尾 ▼、立绘边缘）。
+            # 短的那次是截断：绝不能拿它的译文替换屏幕上已有的完整译文，否则就是“闪”。
+            if len(key) < len(self._last_key) and similar_key(key, self._last_key, threshold=0.72):
+                self._seen = None
+                return None
+            # 长的那次是续写：等它停稳（stable_reads 次确认）再翻，别抢着上屏。
+            if len(key) > len(self._last_key) and similar_key(key, self._last_key, threshold=0.72):
+                seen = self._seen
+                if seen and seen[0] == key:
+                    return self._confirm(seen, need)
+                self._seen = (key, jp_text, png, 1, time.time())
+                self._next_delay = 0.12
+                return None
         if same and not force:
             self._seen = None
             return None
