@@ -60,6 +60,8 @@ class MainWindow:
         self._last_zh = ""          # 最近一次译文：换区域/开关覆盖时用来立刻重画
         self._shown_seq = 0         # 已经上屏的句子号：比它旧的流式增量直接丢（防两句译文闪动）
         self.cover.set_rect(self.cfg.region)
+        if self.cfg.region[2] >= 8:
+            self.engine.set_region(self.cfg.region)
         if self.cfg.get("cover_mode"):
             self.overlay.hide_window()   # 覆盖模式下默认收起底部字幕条，画面干净
         # 启动就先躲开识别区：等到第一帧 OCR 之后再挪，第一帧仍会读到自己的译文
@@ -277,6 +279,7 @@ class MainWindow:
             self.cfg.save()
             self.lbl_region.configure(text=self._region_text())
             self.cover.set_rect(self.cfg.region)
+            self.engine.set_region(self.cfg.region)   # 记下这块像素属于哪个窗口
             if self.cover.visible and self._last_zh:
                 self.cover.show(self._last_zh)
             moved = self.overlay.avoid_rect(rect)

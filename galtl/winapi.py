@@ -457,6 +457,124 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return (int(r.left), int(r.top), int(r.right), int(r.bottom))
 
 
+def foreground_hwnd() -> int:
+    """当前前台窗口句柄（0 表示没有）。"""
+    return int(user32.GetForegroundWindow() or 0)
+
+
+def root_of(hwnd: int) -> int:
+    """把任意子窗口归到它的顶层窗口；失败时返回原值。"""
+    if not hwnd:
+        return 0
+    try:
+        root = user32.GetAncestor(ctypes.c_void_p(int(hwnd)), 2)  # GA_ROOT
+    except Exception:
+        return int(hwnd)
+    return int(root or hwnd)
+
+
+def pid_of(hwnd: int) -> int:
+    """窗口属于哪个进程（0 = 取不到）。"""
+    if not hwnd:
+        return 0
+    try:
+        pid = wt.DWORD(0)
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(int(hwnd)), ctypes.byref(pid))
+        return int(pid.value)
+    except Exception:
+        return 0
+
+
+def window_at(x: int, y: int) -> int:
+    """屏幕坐标处最上层窗口的顶层句柄（用来认「这块像素属于哪个程序」）。"""
+    point = wt.POINT(int(x), int(y))
+    hwnd = user32.WindowFromPoint(point)
+    if not hwnd:
+        return 0
+    root = user32.GetAncestor(ctypes.c_void_p(hwnd), 2)  # GA_ROOT
+    return int(root or hwnd)
+
+
+def sample_frame(x: int, y: int, w: int, h: int, nx: int = 64, ny: int = 16) -> bytes:
+    """把区域缩小成 64x16 的 BGRA 原始像素（每像素 4 字节）。"""
+    w = max(1, int(w))
+    h = max(1, int(h))
+    nx = max(4, min(256, int(nx)))
+    ny = max(4, min(128, int(ny)))
+    hdc_screen = user32.GetDC(None)
+    if not hdc_screen:
+        raise OSError("GetDC 失败")
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+    bmi = BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = nx
+    bmi.bmiHeader.biHeight = -ny
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = BI_RGB
+    ppv = ctypes.c_void_p()
+    hbmp = gdi32.CreateDIBSection(
+        hdc_mem, ctypes.byref(bmi), DIB_RGB_COLORS, ctypes.byref(ppv), None, 0
+    )
+    if not hbmp or not ppv:
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(None, hdc_screen)
+        raise OSError("CreateDIBSection 失败")
+    old = gdi32.SelectObject(hdc_mem, hbmp)
+    try:
+        gdi32.SetStretchBltMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        gdi32.StretchBlt.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        gdi32.StretchBlt.restype = ctypes.c_int
+        gdi32.SetStretchBltMode(hdc_mem, 3)  # HALFTONE
+        ok = gdi32.StretchBlt(hdc_mem, 0, 0, nx, ny, hdc_screen, int(x), int(y), w, h, SRCCOPY)
+        if not ok:
+            raise OSError("StretchBlt 失败（区域超出屏幕？）")
+        return ctypes.string_at(ppv, nx * ny * 4)
+    finally:
+        gdi32.SelectObject(hdc_mem, old)
+        gdi32.DeleteObject(hbmp)
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(None, hdc_screen)
+
+
+def frame_diff(a: bytes, b: bytes, tol: int = 12) -> float:
+    """两张小帧之间「差别有多大」：返回变化像素的占比（0~1）。
+
+    为什么要占比而不是「是否相同」：galgame 的对话框里常年有闪烁的 ▼ 箭头、
+    呼吸立绘、雪花粒子，像素每帧都在变；按「变了就 OCR」会每秒 OCR 五次，
+    而按「变了多少」就能把箭头那种小面积闪烁过滤掉，只对真正的换行做出反应。
+    """
+    if not a or not b or len(a) != len(b):
+        return 1.0
+    n = len(a) // 4
+    if n <= 0:
+        return 1.0
+    changed = 0
+    try:
+        import numpy as np
+
+        x = np.frombuffer(a, dtype=np.uint8).reshape(-1, 4).astype(np.int16)
+        y = np.frombuffer(b, dtype=np.uint8).reshape(-1, 4).astype(np.int16)
+        changed = int((np.abs(x[:, :3] - y[:, :3]).max(axis=1) > tol).sum())
+    except Exception:
+        for i in range(0, len(a), 4):
+            if (abs(a[i] - b[i]) > tol or abs(a[i + 1] - b[i + 1]) > tol
+                    or abs(a[i + 2] - b[i + 2]) > tol):
+                changed += 1
+    return changed / float(n)
+
+
+def sample_hash(x: int, y: int, w: int, h: int, nx: int = 64, ny: int = 16) -> str:
+    """小帧的哈希（保留给需要「变没变」布尔判断的调用方）。"""
+    import hashlib
+
+    return hashlib.sha1(sample_frame(x, y, w, h, nx, ny)).hexdigest()
+
+
 # ---------- 全局热键 ----------
 class HotkeyThread(threading.Thread):
     """后台线程注册全局热键，按键事件通过 queue 交给 Tk 主线程。

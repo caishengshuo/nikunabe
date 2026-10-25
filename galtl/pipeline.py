@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import queue
 import re
 import threading
@@ -120,7 +121,8 @@ class Engine:
         self._last_key = ""
         # (key, 文本, png, 已观察到这颗文本的次数)：稳定性按「文本重复」判定，不看像素是否静止
         self._seen: tuple | None = None
-        self._probe_hash = ""                # 上一次的画面指纹
+        self._probe_frame: bytes = b""       # 上一次的画面小帧（64x16 BGRA）
+        self._last_diff = 0.0                # 最近一次测到的画面变化占比（调试用）
         self._noise_ts = 0.0                 # 上一次提示「像 UI 噪声」的时间
         self._next_delay: float | None = None  # 本轮建议的下次抓取间隔（秒）
         self._seq = 0                        # 第几句（异步语法讲解据此丢弃过期结果）
@@ -133,6 +135,9 @@ class Engine:
         self._context: list[str] = []
         self._last_error_ts = 0.0
         self._slow_hint_shown = False
+        self._game_hwnd = 0                  # 识别区所属的顶层窗口（框选时记下）
+        self._idle_ticks = 0                 # 连续「画面没变」的轮数，用来放慢空闲轮询
+        self._skipped_ticks = 0              # 连续「不在前台」跳过数
         self._overlay_rect_fn = None      # 悬浮窗屏幕矩形(provider)，截图时排除，见 set_overlay_rect
         self.cover = None                 # ui_cover.CoverWindow：覆盖原文模式
         self.stats = {"ocr": 0, "llm": 0, "cache": 0, "fail": 0, "last_ms": 0}
@@ -197,6 +202,23 @@ class Engine:
             log.debug("单字模板库预热失败", exc_info=True)
 
     # ---------- OCR ----------
+    def set_region(self, rect=None, hwnd: int | None = None) -> None:
+        """记下「识别区属于哪个窗口」，用来在不在前台时直接跳过抓屏。
+
+        为什么值得做：抓屏是每 200ms 一次的全窗口回读，在独占全屏的游戏上每次回读
+        都可能让游戏掉一帧——玩家切到浏览器/桌面时还在回读完全是浪费。知道是哪个
+        窗口之后，前台不是它就直接不抓。
+        """
+        x, y, w, h = rect or self.cfg.region
+        if hwnd is None:
+            try:
+                hwnd = winapi.window_at(int(x + w // 2), int(y + h // 2))
+            except Exception:
+                hwnd = 0
+        if hwnd:
+            self._game_hwnd = int(hwnd)
+            log.info("识别区所属窗口 hwnd=%s", self._game_hwnd)
+
     def set_overlay_rect(self, fn) -> None:
         """注册「悬浮窗屏幕矩形」的取值函数，截图时把这块从截图里排掉。
 
@@ -912,21 +934,21 @@ class Engine:
         # busy 的复位与「下一句」的启动移到 _enrich_run 的 finally 里——正文可能提前 return
 
     # ---------- 抓一帧 ----------
-    def probe_hash(self) -> str:
-        """极低成本的画面指纹（缩小后取哈希），用来判断这一帧要不要 OCR。
+    def probe_hash(self) -> bytes:
+        """极低成本的画面小帧（64x16），用来判断这一帧要不要 OCR。
 
-        抓整屏 BitBlt + 缩放到 12% 大约 10~20ms，比一次 OCR（200~600ms）便宜一个数量级。
+        以前是「整块 BitBlt + 缩放到 12% + 编码 PNG」：抓 1520x180 要 6~14ms、还要
+        编码 119KB 的 PNG；现在只回读 64x16（4KB），拿到的小帧还能算出「变了多少」，
+        从而把闪烁的 ▼、呼吸立绘这类小面积变化过滤掉——它们不再触发 OCR。
         """
         x, y, w, h = self._capture_region()
         if w < 8 or h < 8:
             raise RuntimeError("尚未框选字幕区域")
         self._cover_dip(True)
         try:
-            png, _, _ = winapi.grab_png(x, y, w, h, scale=0.12, binarize=False,
-                                        exclude=self._exclude_rect(x, y, w, h))
+            return winapi.sample_frame(x, y, w, h, nx=64, ny=16)
         finally:
             self._cover_dip(False)
-        return hashlib.sha1(png).hexdigest()
 
     def _cover_dip(self, on: bool) -> None:
         """覆盖层是否需要在取样瞬间隐身（只有系统不支持截图排除时才需要）。"""
@@ -941,6 +963,7 @@ class Engine:
     def _finish_tick(self, jp_text: str, png: bytes | None, key: str) -> dict:
         self._last_key = key
         self._seen = None
+        self._idle_ticks = 0
         self._seq += 1
         self.status("翻译中…")
         # 讲解请求只依赖日文台词，和翻译并行发出去，把它的等待藏进翻译的等待里
@@ -976,6 +999,31 @@ class Engine:
             return None
         return self._finish_tick(text, png, key)
 
+    def _in_foreground(self) -> bool:
+        """识别区所属窗口是否在前台（没有记录窗口时一律当作在场）。
+
+        例外：如果前台是我们自己的窗口（字幕条、主窗口、设置、框选遮罩），
+        算作「还在游戏里」——否则你一点字幕条、拖动它、或者开着设置面板调参数，
+        翻译就会停，看起来像坏了。
+        """
+        gw = self._game_hwnd
+        if not gw:
+            return True
+        try:
+            fg = winapi.foreground_hwnd()
+        except Exception:
+            return True
+        if not fg:
+            return True
+        if fg == gw or winapi.root_of(fg) == winapi.root_of(gw):
+            return True
+        try:
+            if winapi.pid_of(fg) == os.getpid():
+                return True
+        except Exception:
+            pass
+        return False
+
     def tick(self, force: bool = False) -> dict | None:
         """抓一次：读到新台词就翻。
 
@@ -987,18 +1035,43 @@ class Engine:
         need = max(1, int(self.cfg.get("stable_reads", 2)))
         probe_ok = bool(self.cfg.get("use_probe", True)) and mode == "ocr" and not force
         if force:
-            self._probe_hash = ""       # 手动触发后重新建立指纹基线
+            self._probe_frame = b""     # 手动触发后重新建立指纹基线
             self._seen = None           # 手动触发不等确认，立刻翻
         self._next_delay = None
 
+        if not force and mode == "ocr" and bool(self.cfg.get("only_foreground", True)):
+            if not self._in_foreground():
+                self._skipped_ticks += 1
+                if self._skipped_ticks == 1:
+                    self.status("识别区不在前台，暂停抓取（切回游戏自动继续）")
+                return None
+            if self._skipped_ticks:
+                self._skipped_ticks = 0
+                self.status("回到前台，继续抓取")
+
         changed = True
         if probe_ok:
-            ph = self.probe_hash()
-            changed = ph != self._probe_hash
-            self._probe_hash = ph
+            frame = self.probe_hash()
+            old_frame = self._probe_frame
+            self._probe_frame = frame
+            if not old_frame:
+                changed = True                     # 第一帧没有基线
+            else:
+                diff = winapi.frame_diff(old_frame, frame)
+                self._last_diff = diff
+                # 阈值分两档：刚翻过页（还有台词待确认）时极其敏感，保证「ん」「っ」
+                # 这种只占一小块的短句不漏；读文本期间（已空闲）才放宽，滤掉闪烁 ▼、
+                # 呼吸立绘这些常年跳动的像素，免得每秒都白跑一次 OCR。
+                idle_after = max(1, int(self.cfg.get("idle_after_ticks", 3)))
+                if self._idle_ticks >= idle_after:
+                    thr = float(self.cfg.get("probe_min_change", 0.02) or 0.0)
+                else:
+                    thr = float(self.cfg.get("probe_min_change_active", 0.002) or 0.0)
+                changed = diff >= thr
             if not changed:
                 seen = self._seen
                 if not seen or seen[0] == self._last_key:
+                    self._idle_ticks += 1
                     return None         # 画面没动、也没有待确认的新台词 → 连 OCR 都不做
                 # 像素完全一样 ⇒ 文本必然一样：直接给待定台词补一次确认，省掉一次 OCR
                 return self._confirm(seen, need)
@@ -1053,6 +1126,7 @@ class Engine:
                 return None
         if same and not force:
             self._seen = None
+            self._idle_ticks += 1      # 台词没变（说不定只是在读）→ 允许 _loop 放慢轮询
             return None
 
         if (
@@ -1127,6 +1201,12 @@ class Engine:
                     self.emit("error", str(exc))
                 self.status(f"等待重试：{exc}")
             delay = self._next_delay if self._next_delay is not None else interval
+            if self._next_delay is None:
+                # 空闲（画面长时间没变）时放慢轮询：玩家在读文本的十几秒里，
+                # 每秒 5 次的屏幕回读完全是白烧的 CPU 和对游戏的打扰
+                after = max(1, int(self.cfg.get("idle_after_ticks", 3)))
+                if self._idle_ticks >= after:
+                    delay = max(delay, float(self.cfg.get("idle_poll_ms", 600)) / 1000.0)
             rest = delay - (time.time() - t0)
             # 一帧比间隔还慢时不要空转：留 40ms 让出 CPU，否则大框选会把一个核吃满
             self._stop.wait(max(rest, 0.04) if rest > 0 else 0.04)

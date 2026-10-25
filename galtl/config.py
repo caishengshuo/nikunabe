@@ -16,7 +16,12 @@ DEFAULTS: dict[str, Any] = {
     "mode": "ocr",                 # ocr | clipboard | vision
     "region": [0, 0, 0, 0],        # 屏幕坐标 x, y, w, h
     "poll_ms": 250,                # 空闲轮询间隔（画面不动时只做廉价指纹比对）
-    "use_probe": True,             # 先用 12% 缩略图指纹判断「画面变了没」，变了才 OCR
+    "use_probe": True,             # 先用缩小的画面指纹判断「画面变了没」，变了才 OCR
+    "only_foreground": True,       # 识别区所属窗口不在前台时直接不抓屏（省 CPU、也不打扰游戏）
+    "probe_min_change": 0.02,      # 空闲时：画面变化占比低于这个值就不 OCR（滤掉闪烁 ▼/呼吸立绘）
+    "probe_min_change_active": 0.002,  # 刚翻页/待确认时用的小阈值（保证短句不漏）
+    "idle_after_ticks": 8,         # 连续这么多轮台词没变才算「空闲」（约 2 秒）
+    "idle_poll_ms": 450,           # 空闲时的轮询间隔（读文本时减少屏幕回读，又不太牺牲响应）
     "stable_reads": 2,
     "settle_ms": 200,          # 同一句要「静止」这么久才翻，挡住打字机/淡入的中间帧             # 需要几次一致的画面才翻译（2 = 看一眼确认，防半帧闪现）
     "upscale": 2.0,                # OCR 前放大倍数
@@ -51,8 +56,8 @@ DEFAULTS: dict[str, Any] = {
     # ---- 悬浮窗 ----
     "overlay_pos": [0, 0],
     "overlay_width": 1100,
-    "overlay_bg_transparent": True,   # 字幕条背景透明：只留文字，不挡游戏画面
-    "overlay_alpha": 0.93,    # 仅在不透明模式下生效
+    "overlay_bg_transparent": False,   # 字幕条背景透明：只留文字，不挡游戏画面
+    "overlay_alpha": 1.0,    # 仅在不透明模式下生效
     "jp_size": 12,
     "zh_size": 19,
     "gram_size": 11,

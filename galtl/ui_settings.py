@@ -353,6 +353,8 @@ class SettingsDialog:
         ttk.Label(f, text="不透明度").grid(row=3, column=0, sticky="w", padx=(12, 8), pady=6)
         ttk.Spinbox(f, from_=0.30, to=1.0, increment=0.05, width=8,
                     textvariable=self._var("overlay_alpha", "dbl")).grid(row=3, column=1, sticky="w")
+        ttk.Checkbutton(f, text="背景透明（只留文字）", variable=self._var("overlay_bg_transparent", "bool")).grid(
+            row=3, column=2, sticky="w", padx=(8, 0))
         ttk.Label(f, text="窗口宽度").grid(row=4, column=0, sticky="w", padx=(12, 8), pady=6)
         ttk.Spinbox(f, from_=380, to=2400, increment=20, width=8,
                     textvariable=self._var("overlay_width", "int")).grid(row=4, column=1, sticky="w")

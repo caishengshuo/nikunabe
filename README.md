@@ -157,8 +157,13 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 | --- | --- | --- |
 | `mode` | `ocr` | `ocr` 截图识别 / `clipboard` 读剪贴板 / `vision` 多模态模型直读图 |
 | `region` | `[0,0,0,0]` | 屏幕坐标 x,y,w,h（F7 框完自动写入） |
-| `poll_ms` | `250` | 空闲轮询间隔（毫秒）。画面没动时只比一次廉价指纹，几乎不花 CPU |
-| `use_probe` | `true` | 先用 12% 缩略图指纹判断画面变没变，变了才做 OCR（省掉大量无用识别） |
+| `poll_ms` | `250` | 轮询间隔（毫秒）。每次只回读一张 64×16 的小帧用来判断画面变没变 |
+| `use_probe` | `true` | 先比小帧再决定要不要 OCR（省掉大量无用识别） |
+| `probe_min_change` | `0.02` | 空闲时：画面变化占比低于此值就不 OCR（滤掉闪烁 ▼、呼吸立绘） |
+| `probe_min_change_active` | `0.002` | 刚翻页/待确认时的小阈值，保证「ん」「っ」这种短句不被当成噪声 |
+| `only_foreground` | `true` | 识别区所属窗口不在前台时完全不抓屏（省 CPU，也不会把别的窗口文字当台词） |
+| `idle_after_ticks` | `8` | 连续多少轮台词没变算「空闲」（约 2 秒） |
+| `idle_poll_ms` | `450` | 空闲时的轮询间隔 |
 | `stable_reads` | `2` | 需要几次一致的画面才翻译，防半帧闪现/重影（2 = 看一眼确认） |
 | `upscale` | `2.0` | 识别前放大倍数，小字游戏有用 |
 | `ocr_pixel_budget` | `3000000` | 像素预算：放大倍数自动收缩到这个规模内，避免大框选拖慢速度 |
@@ -221,7 +226,8 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `overlay_pos` / `overlay_width` | `[0,0]` / `1100` | 位置与宽度（`[0,0]` = 自动底部居中） |
-| `overlay_alpha` | `0.93` | 不透明度 |
+| `overlay_alpha` | `1.0` | 不透明度（配合下面的背景开关） |
+| `overlay_bg_transparent` | `false` | `true` = 只留文字、背景透出游戏画面；`false` = 实心底板（默认） |
 | `jp_size` / `zh_size` / `gram_size` | `12` / `19` / `11` | 原文/译文/讲解字号 |
 | `show_jp` / `show_kana` / `show_vocab` / `show_notes` | `true` / `false` / `true` / `true` | 悬浮窗显示哪些行 |
 | `overlay_locked` / `overlay_visible` | `false` / `true` | 鼠标穿透 / 是否显示 |
@@ -300,6 +306,7 @@ build.bat          :: 重新打包 → dist\galgame日语助手.exe
 | `overlay_drag_check.py` | 拖完再渲染一帧位置不弹回 |
 | `overlay_occlusion_check.py` | 字幕条压在识别区上时会读到自己 / 涂黑丢字 / 自动避让（三组对照） |
 | `latency_check.py` / `latency_e2e.py` | 把延迟拆成指纹/OCR/首字/译文/语法逐段计时 |
+| `perf_gate_check.py` | 小帧指纹、前台门（不在前台不抓屏）、空闲放慢、小面积闪烁不触发 OCR |
 | `fake_game.py` | 假 galgame 对话框（台词 + 闪烁 ▼，每 4 秒换句），配合真 exe 看自动翻译 |
 | `llm_parse_check.py` | 模型输出截断/代码块/尾逗号都能出结果 |
 | `api_check.py` | 真实接口联通（用你 `config.json` 里的 key 翻一句） |
