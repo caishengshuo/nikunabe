@@ -70,12 +70,48 @@ jobs:
           path: release/*.zip
           if-no-files-found: error
 
+      # Release 说明直接取 CHANGELOG.md 里对应版本的那一节。
+      # 以前用 `body_path: 使用说明.txt`，结果每个版本的 Release 正文都是同一份使用说明，
+      # 更新日志在 GitHub 上永远看不到。
+      - name: 生成 Release 说明（取 CHANGELOG 对应小节）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = $env:VERSION
+          $lines = Get-Content "CHANGELOG.md" -Encoding UTF8
+          $start = -1
+          $end = $lines.Count
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($start -lt 0 -and $lines[$i] -match "^##\s+v?$([regex]::Escape($ver))(\s|—|–|$)") {
+              $start = $i
+              continue
+            }
+            if ($start -ge 0 -and $lines[$i] -match "^##\s+v?\d+\.\d+\.\d+") {
+              $end = $i
+              break
+            }
+          }
+          if ($start -lt 0) {
+            $body = "## v$ver`n`n这一版的具体改动见 CHANGELOG.md。"
+            $title = "v$ver"
+          } else {
+            $head = $lines[$start]
+            $body = ($lines[($start + 1)..($end - 1)] -join "`n").Trim()
+            $title = if ($head -match "—\s*(.+)$") { "v$ver — $($Matches[1].Trim())" } else { "v$ver" }
+          }
+          $repo = "${{ github.repository }}"
+          $footer = "`n`n---`n`n**下载**：解压 ``galgame-jp-helper-v$ver-win64.zip``，双击 ``galgame日语助手.exe``（不用装 Python）。`n**第一次用**：**F7** 框住对话框文字区，**F8** 开自动翻译。`n**完整更新日志**：https://github.com/$repo/blob/main/CHANGELOG.md"
+          Set-Content -Path "release/notes.md" -Value ($body + $footer) -Encoding UTF8
+          "TITLE=$title" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "notes.md = {0} 字符" -f ($body + $footer).Length
+
       - name: 附加到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: release/*.zip
-          generate_release_notes: true
-          body_path: 使用说明.txt
+          body_path: release/notes.md
+          name: ${{ env.TITLE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

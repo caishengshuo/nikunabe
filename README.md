@@ -11,6 +11,9 @@
   <img src="docs/overlay.png" width="420" alt="贴屏悬浮字幕">
 </p>
 
+**下载**：[Releases](../../releases)（每个版本都挂 zip；Release 说明就是该版本的更新日志）
+　**更新日志**：[CHANGELOG.md](CHANGELOG.md)
+
 ## 这个项目是干什么的（用途）
 
 | 你在干什么 | 它帮你做什么 |
