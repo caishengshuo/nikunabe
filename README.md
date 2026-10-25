@@ -87,6 +87,24 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 
 没有 API Key 也能先玩玩：离线语法库会标出句子里命中的句型，只是没有中文译文。
 
+## 两个翻译引擎（设置 → 翻译引擎）
+
+翻译走哪条路可以自己选，两条都留了：
+
+| 模式 | 谁来翻 | 拿到什么 | 花钱方式 | 适合谁 |
+| --- | --- | --- | --- | --- |
+| **外部 API（大模型）** | 你在「模型」页配的 OpenAI 兼容接口（DeepSeek / 通义 / Kimi / 本地 Ollama 都行） | 译文 **+** 语法点、重点词、语气说明 | 按 token 计费 | 想边玩边学语法 |
+| **微软翻译** | Azure 翻译器 v3（`translate?api-version=3.0`） | **只给译文**；语法/生词取本地句型库 | 按字符计费，每月免费 200 万字符 | 只想看懂剧情、不想花 token |
+
+微软翻译这条要在 Azure 里建一个「翻译器」资源，把「密钥和终结点」页里的 **KEY 1** 填进设置的「微软 Key」：
+
+- **区域**（`ms_region`）填资源所在区域，如 `eastasia`、`japaneast`；**全球资源**（Global）留空。
+- 免费层 F0：每月 200 万字符，日语短句足够玩很久；超了会返回 429，程序会提示「等一会儿或把自动翻译间隔调大」。
+- 接口地址一般不用改（`https://api.cognitive.microsofttranslator.com`），要走代理/镜像时改 `ms_endpoint`。
+- 填完点「测试微软翻译」，能在下面看到译文就说明通了。
+
+切换是**即时生效**的（点「保存并应用」后），缓存两边共用：同一句台词不会因为换了引擎再花一次钱。没有 key 时两条路都退化成「本地句型库 + 不翻」——不会报错卡住。
+
 ## 覆盖原文（像官方中文版那样玩）
 
 不想读旁边的字幕条，只想让画面里就是中文：
@@ -163,6 +181,7 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
+| `translate_engine` | `llm` | `llm`=外部 API（译文+语法）／`ms`=微软翻译（只给译文，语法用本地库） |
 | `provider` | `deepseek` | 仅作标记，实际看 `base_url` |
 | `base_url` | `https://api.deepseek.com/v1` | OpenAI 兼容地址，**以 `/v1` 结尾** |
 | `model` | `deepseek-chat` | 文本模型名 |
@@ -173,6 +192,15 @@ OCR 引擎 lang=ja 可用语言=['en-GB', 'ja', 'zh-Hans-CN']
 | `glossary` | 空 | 术语表，逐行 `日文=中文`（人名、专有名词统一译法） |
 | `context_lines` | `2` | 带上几条前文当上下文 |
 | `auto_translate` | `false` | 启动即开自动模式 |
+
+**微软翻译**（`translate_engine=ms` 时才用）
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `ms_key` | 空 | Azure 翻译器资源的 KEY 1，**只存在本机 `config.json`** |
+| `ms_region` | 空 | 资源区域，如 `eastasia`；全球资源留空 |
+| `ms_endpoint` | `https://api.cognitive.microsofttranslator.com` | 要走镜像/代理时改这里 |
+| `ms_from_lang` / `ms_to_lang` | `ja` / `zh-Hans` | 源语言 / 目标语言 |
 
 **悬浮窗**
 

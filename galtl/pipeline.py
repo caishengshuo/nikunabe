@@ -17,7 +17,7 @@ import threading
 import time
 
 from . import grammar as grammar_mod
-from . import inkprobe, llm, vocab as vocab_mod, winapi
+from . import inkprobe, llm, msmt, vocab as vocab_mod, winapi
 from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
@@ -133,6 +133,47 @@ class Engine:
         self.cover = None                 # ui_cover.CoverWindow：覆盖原文模式
         self.stats = {"ocr": 0, "llm": 0, "cache": 0, "fail": 0, "last_ms": 0}
         self._glyph_px = 0.0                 # 上一帧原文的字高（屏幕像素），覆盖层据此定字号
+
+    # ---------- 翻译引擎选择 ----------
+    @property
+    def engine_kind(self) -> str:
+        """翻译引擎：llm=外部 API（同时讲语法） / ms=微软翻译（只给译文，配本地语法库）。"""
+        kind = str(self.cfg.get("translate_engine", "llm") or "llm").strip().lower()
+        return "ms" if kind in ("ms", "microsoft", "azure") else "llm"
+
+    @property
+    def ms_ready(self) -> bool:
+        return bool((self.cfg.get("ms_key") or "").strip())
+
+    def ms_kwargs(self) -> dict:
+        return {
+            "key": self.cfg.get("ms_key") or "",
+            "region": self.cfg.get("ms_region") or "",
+            "endpoint": self.cfg.get("ms_endpoint") or msmt.DEFAULT_ENDPOINT,
+            "from_lang": self.cfg.get("ms_from_lang") or "ja",
+            "to_lang": self.cfg.get("ms_to_lang") or "zh-Hans",
+            "timeout": int(self.cfg.get("timeout", 20) or 20),
+        }
+
+    def _translate_with_ms(self, jp_text: str, t0: float) -> dict:
+        """微软翻译路线：一次请求拿一条译文；语法/生词用本地库补（不花 token）。"""
+        zh = msmt.translate(jp_text, **self.ms_kwargs())
+        zh = _one_line((zh or "").strip())
+        self.stats["llm"] += 1
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
+        self.emit("partial", {"jp": jp_text, "zh": zh, "ms": elapsed})
+        return {
+            "noise": False,
+            "jp": jp_text,
+            "kana": "",
+            "zh": zh,
+            "literal": "",
+            "notes": "",
+            "grammar": grammar_mod.match(jp_text, limit=3),
+            "vocab": vocab_mod.quick(jp_text, limit=4),
+            "first_ms": elapsed,
+            "meta": {"engine": "ms"},
+        }
 
     # ---------- 事件 ----------
     def emit(self, kind: str, data) -> None:
@@ -323,7 +364,15 @@ class Engine:
                     self._last_result = hit
                     return hit
 
-        if not self.cfg.has_key and (self.cfg.get("provider") != "ollama"):
+        if self.engine_kind == "ms" and not self.ms_ready:
+            # 微软翻译模式但没填密钥：本地降级（仍给语法提示），并把该去哪儿填说清楚
+            self.emit("status", "微软翻译还没配密钥：设置 → 模型 → 翻译引擎选「微软翻译」并填 KEY 1")
+            res = llm.offline_result(jp_text)
+            res["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                           "engine": "local:no-ms-key"}
+            return res
+
+        if self.engine_kind != "ms" and not self.cfg.has_key and (self.cfg.get("provider") != "ollama"):
             # 无 Key：本地降级（仍给语法提示），不报错
             res = llm.offline_result(jp_text)
             res["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1), "engine": "local"}
@@ -353,9 +402,9 @@ class Engine:
                             pass
                     return skip
                 res = self._translate_two_phase(jp_text, kwargs, context, glossary, history)
-                engine = "text:" + kwargs["model"]
+                engine = "ms" if self.engine_kind == "ms" else "text:" + kwargs["model"]
             self.stats["llm"] += 1
-        except llm.LlmError as exc:
+        except (llm.LlmError, msmt.MsError) as exc:
             self.stats["fail"] += 1
             raise RuntimeError(f"模型调用失败：{exc}") from None
 
@@ -410,6 +459,9 @@ class Engine:
         zh = ""
         cut = False
         first_ms: float | None = None
+
+        if self.engine_kind == "ms":
+            return self._translate_with_ms(jp_text, t0)
 
         if bool(self.cfg.get("stream_translate", True)):
             acc: list[str] = []
@@ -515,6 +567,10 @@ class Engine:
         """
         if not jp_text or not looks_japanese(jp_text):
             log.info("讲解预发起跳过：文本没有日文 %r", (jp_text or "")[:30])
+            return
+        if self.engine_kind == "ms":
+            # 微软翻译模式只做译文，语法/生词取自本地句型库（已在 _translate_with_ms 里补），
+            # 不发起大模型请求，也就没有「讲解延迟」这回事。
             return
         if not self.cfg.has_key and (self.cfg.get("provider") != "ollama"):
             log.info("讲解预发起跳过：没有 api_key")

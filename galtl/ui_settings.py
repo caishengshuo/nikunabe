@@ -51,6 +51,7 @@ class SettingsDialog:
     def _build(self):
         nb = ttk.Notebook(self.win)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
+        self._tab_engine(nb)
         self._tab_model(nb)
         self._tab_capture(nb)
         self._tab_display(nb)
@@ -61,6 +62,82 @@ class SettingsDialog:
         ttk.Button(bar, text="恢复默认", command=self._reset).pack(side="left")
         ttk.Button(bar, text="取消", command=self.win.destroy).pack(side="right")
         ttk.Button(bar, text="保存并应用", command=self._save).pack(side="right", padx=8)
+
+    def _tab_engine(self, nb):
+        f = ttk.Frame(nb)
+        nb.add(f, text="翻译引擎")
+        f.columnconfigure(1, weight=1)
+
+        box = ttk.LabelFrame(f, text="用哪个引擎翻译台词")
+        box.grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(10, 8))
+        self.var_engine = tk.StringVar(value=str(self.cfg.get("translate_engine", "llm")))
+        ttk.Radiobutton(
+            box, text="外部 API（大模型）—— 译文 + 语法讲解", value="llm",
+            variable=self.var_engine, command=self._sync_engine_state,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2))
+        ttk.Label(
+            box, text="用「模型」页配的 OpenAI 兼容接口：一次请求同时拿译文、语法点、生词。按 token 计费。",
+            foreground="#7a8494", wraplength=560, justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=(30, 8), pady=(0, 8))
+        ttk.Radiobutton(
+            box, text="微软翻译 —— 只给译文（语法/生词用本地句型库）", value="ms",
+            variable=self.var_engine, command=self._sync_engine_state,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2))
+        ttk.Label(
+            box, text="Azure 翻译器 v3：按字符计费、每月免费 200 万字符；不花 token，但不会讲语法。",
+            foreground="#7a8494", wraplength=560, justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(30, 8), pady=(0, 8))
+
+        self.ms_key = self._row(f, 1, "微软 Key",
+                                ttk.Entry(f, textvariable=self._var("ms_key"), show="•"),
+                                "Azure 门户「密钥和终结点」里的 KEY 1")
+        self.ms_region = self._row(f, 2, "区域",
+                                   ttk.Entry(f, textvariable=self._var("ms_region")),
+                                   "如 eastasia；全球资源可留空")
+        self.ms_endpoint = self._row(f, 3, "接口地址",
+                                     ttk.Entry(f, textvariable=self._var("ms_endpoint")),
+                                     "一般不用改")
+
+        self.btn_ms_test = ttk.Button(f, text="测试微软翻译", command=self._test_ms)
+        self.btn_ms_test.grid(row=4, column=1, sticky="w", pady=(8, 6))
+        self.lbl_ms_test = ttk.Label(f, text="", foreground="#3a8f5c")
+        self.lbl_ms_test.grid(row=4, column=2, sticky="w", pady=(8, 6))
+
+        ttk.Label(
+            f, text="切换后点「保存并应用」立刻生效；两条路可以随时来回切，缓存共用。",
+            foreground="#7a8494",
+        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 10))
+        self._sync_engine_state()
+
+    def _sync_engine_state(self):
+        """只有选了微软翻译，才让 Azure 那几个输入框可用。"""
+        on = self.var_engine.get() == "ms"
+        for w in (self.ms_key, self.ms_region, self.ms_endpoint):
+            try:
+                w.configure(state="normal" if on else "disabled")
+            except Exception:
+                pass
+        try:
+            self.btn_ms_test.configure(state="normal" if on else "disabled")
+        except Exception:
+            pass
+
+    def _test_ms(self):
+        from . import msmt
+
+        self.lbl_ms_test.configure(text="测试中…", foreground="#7a8494")
+        self.win.update_idletasks()
+        try:
+            out = msmt.translate(
+                "こんな時間まで起きているなんて、明日の朝が心配だよ。",
+                key=self.vars["ms_key"].get(),
+                region=self.vars["ms_region"].get(),
+                endpoint=self.vars["ms_endpoint"].get(),
+                timeout=min(30, int(self.vars["timeout"].get() or 20)),
+            )
+            self.lbl_ms_test.configure(text=f"OK：{out[:28]}", foreground="#3a8f5c")
+        except Exception as exc:
+            self.lbl_ms_test.configure(text=f"失败：{str(exc)[:60]}", foreground="#c0392b")
 
     def _tab_model(self, nb):
         f = ttk.Frame(nb)
@@ -331,6 +408,7 @@ class SettingsDialog:
         patch = {k: v.get() for k, v in self.vars.items()}
         patch["glossary"] = self.e_gloss.get("1.0", "end").strip()
         patch["provider"] = getattr(self, "_provider_current", self.cfg.get("provider"))
+        patch["translate_engine"] = self.var_engine.get() or "llm"
         patch["mode"] = ["ocr", "clipboard", "vision"][self._mode_cb.current()] \
             if self._mode_cb.current() >= 0 else "ocr"
         patch["ocr_engine"] = self._ocr_cb.get() or "winocr"

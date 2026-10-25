@@ -127,13 +127,57 @@ check("对话框已真正映射", dlg.win.winfo_ismapped() == 1)
 print("5) 改成 record 能落盘")
 pw, ph = shot(dlg.win, out)
 print("saved", out, f"{pw}x{ph}")
+
+print("6) 新增的「翻译引擎」页")
+eng_idx = None
+for i in range(nb.index("end")):
+    if "翻译引擎" in nb.tab(i, "text"):
+        eng_idx = i
+check("存在「翻译引擎」页", eng_idx is not None, f"tabs={[nb.tab(i, 'text') for i in range(nb.index('end'))]}")
+if eng_idx is not None:
+    nb.select(eng_idx)
+    dlg.win.update()
+    time.sleep(0.3)
+    var_engine = getattr(dlg, "var_engine", None)
+    check("有 var_engine", var_engine is not None)
+    if var_engine is not None:
+        want = str(cfg.get("translate_engine") or "llm")
+        check("单选默认值与配置一致", var_engine.get() == want,
+              f"{var_engine.get()} != {want}")
+        print("   - 选 llm 时微软那几个框应当禁用")
+        var_engine.set("llm")
+        dlg._sync_engine_state()
+        dlg.win.update()
+        states = [str(w.cget("state")) for w in (dlg.ms_key, dlg.ms_region, dlg.ms_endpoint)]
+        check("llm 模式下微软输入框禁用", all(s == "disabled" for s in states), str(states))
+        print("   - 选 ms 时应当可用")
+        var_engine.set("ms")
+        dlg._sync_engine_state()
+        dlg.win.update()
+        states = [str(w.cget("state")) for w in (dlg.ms_key, dlg.ms_region, dlg.ms_endpoint)]
+        check("ms 模式下微软输入框可用", all(s == "normal" for s in states), str(states))
+        out2 = out.replace(".png", "_engine.png")
+        pw2, ph2 = shot(dlg.win, out2)
+        print("saved", out2, f"{pw2}x{ph2}")
+        tab = nb.nametowidget(nb.select())
+        check("引擎页宽度放得下", tab.winfo_reqwidth() <= dlg.win.winfo_width() - 24,
+              f"need={tab.winfo_reqwidth()} win={dlg.win.winfo_width()}")
+        check("引擎页高度放得下", tab.winfo_reqheight() <= dlg.win.winfo_height() - 40,
+              f"need={tab.winfo_reqheight()} win={dlg.win.winfo_height()}")
+
+print("7) 保存：录屏档 + 微软引擎同时落盘")
 if cb is not None:
     cb.current(1)
-    try:
-        dlg._save()          # 内部会 cfg.update + save + destroy
-    except tk.TclError:
-        pass
-    check("配置写入 record", cfg.get("cover_capture") == "record", cfg.get("cover_capture"))
+try:
+    dlg._save()          # 内部会 cfg.update + save + destroy
+except tk.TclError:
+    pass
+if cb is not None:
+    check("配置写入 cover_capture=record", cfg.get("cover_capture") == "record",
+          cfg.get("cover_capture"))
+if getattr(dlg, "var_engine", None) is not None:
+    check("配置写入 translate_engine=ms", cfg.get("translate_engine") == "ms",
+          str(cfg.get("translate_engine")))
 
 try:
     root.destroy()

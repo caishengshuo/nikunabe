@@ -90,7 +90,15 @@ def diagnostic() -> int:
     add(f"OCR 脚本 {OCR_PS1}（存在={OCR_PS1.exists()}）")
 
     cfg = Config()
-    add(f"模型 {cfg.get('model')} @ {cfg.get('base_url')}  key={'已填' if cfg.has_key else '空'}")
+    engine_kind = str(cfg.get("translate_engine", "llm") or "llm").strip().lower()
+    engine_kind = "ms" if engine_kind in ("ms", "microsoft", "azure") else "llm"
+    if engine_kind == "ms":
+        add(f"翻译引擎 微软翻译 @ {cfg.get('ms_endpoint')}"
+            f"  key={'已填' if (cfg.get('ms_key') or '').strip() else '空'}"
+            f"  区域={cfg.get('ms_region') or '（全球）'}")
+    else:
+        add(f"翻译引擎 外部 API  模型 {cfg.get('model')} @ {cfg.get('base_url')}"
+            f"  key={'已填' if cfg.has_key else '空'}")
 
     # 1) 造一张图，走完整 OCR 链路（不依赖桌面内容）
     try:
@@ -118,10 +126,30 @@ def diagnostic() -> int:
         add(f"OCR 自检失败：{type(exc).__name__}: {exc}")
         eng = store = None
 
-    # 2) 模型联通（有 key 才测）
+    # 2) 翻译引擎联通（按模式各测各的）
     ok_llm = None
     ok_drag = False
-    if cfg.has_key:
+    if engine_kind == "ms":
+        if (cfg.get("ms_key") or "").strip():
+            try:
+                from . import msmt
+
+                t0 = time.perf_counter()
+                out = msmt.translate(
+                    "明日の朝が心配だよ。",
+                    key=cfg.get("ms_key") or "",
+                    region=cfg.get("ms_region") or "",
+                    endpoint=cfg.get("ms_endpoint") or msmt.DEFAULT_ENDPOINT,
+                    timeout=min(30, int(cfg.get("timeout", 20) or 20)),
+                )
+                ok_llm = bool(out)
+                add(f"微软翻译自检 {(time.perf_counter() - t0) * 1000:.0f}ms -> {out!r}")
+            except Exception as exc:
+                ok_llm = False
+                add(f"微软翻译自检失败：{type(exc).__name__}: {exc}")
+        else:
+            add("微软翻译自检跳过（config.json 里没有 ms_key；语法/生词仍可用本地句型库）")
+    elif cfg.has_key:
         try:
             from . import llm as llm_mod
 

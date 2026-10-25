@@ -73,6 +73,13 @@ DEFAULTS: dict[str, Any] = {
     "cover_min_size": 12,
     "cover_exclude_capture": True,  # 让自己不被截图拍到（零闪烁的关键）
     "cover_capture": "exclude",     # exclude=永久隐藏于截图 / record=仅取词瞬间隐藏（录制能录到中文）/ off=永不隐藏
+    # ---- 翻译引擎：大模型 / 微软翻译 ----
+    "translate_engine": "llm",      # llm=外部 API（OpenAI 兼容，同时给语法讲解）| ms=微软翻译（只给译文）
+    "ms_key": "",                   # Azure 翻译器资源的 KEY 1
+    "ms_region": "",                # 资源区域，如 eastasia；全球资源留空
+    "ms_endpoint": "https://api.cognitive.microsofttranslator.com",
+    "ms_to_lang": "zh-Hans",
+    "ms_from_lang": "ja",
     "font_jp": "Yu Gothic UI",
     "font_zh": "Microsoft YaHei UI",
     "theme": "dark",               # dark | light
