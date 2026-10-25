@@ -9,7 +9,7 @@ import logging
 import tkinter as tk
 from tkinter import font as tkfont
 
-from . import winapi
+from . import animate, winapi
 
 log = logging.getLogger("galtl.overlay")
 
@@ -68,6 +68,14 @@ class Overlay:
         self._cur_pos: list[int] | None = None
         self._auto_pos: bool | None = None
         self._current: dict = {}
+        # 动画/重绘节流（见 galtl/animate.py）：一串流式增量合并成一次重绘，
+        # 新台词做一次颜色淡入，都不碰窗口几何，避免「字母蹦出来还掉帧」。
+        self._co = animate.Coalesce(self.win, animate.FRAME_MS)
+        self._fade: animate.Tween | None = None
+        self._geom: tuple[int, int] = (0, 0)      # 当前已应用的 (w, h)
+        self._stream_text = ""                    # 已经画在屏幕上的那句中文
+        self._stream_on = False
+        self._zh_color = "#e8eef7"
         self._build()
         self.apply_config()
         if cfg.get("overlay_visible", True):
@@ -142,6 +150,7 @@ class Overlay:
         self.f_meta = tkfont.Font(family="Consolas", size=8)
 
         transparent = bool(self.cfg.get("overlay_bg_transparent", True))
+        self._bg_visible = transparent
         key = self._key_bg
         bg = key if transparent else theme["bg"]
         edge = key if transparent else theme["border"]
@@ -172,6 +181,9 @@ class Overlay:
         self.text.tag_configure("note", font=self.f_gram, foreground=theme["note"],
                                 lmargin1=0, lmargin2=0, spacing1=4)
         self.text.tag_configure("cur", font=self.f_zh, foreground=theme["note"])
+        self._zh_color = theme["zh"]
+        self._anim_ms = int(self.cfg.get("anim_ms", 160) or 160)
+        self._anim_on = bool(self.cfg.get("anim_enabled", True))
         try:
             if transparent:
                 # 键控色必须是完全不透明的，否则那个颜色本身会带着半透明残留
@@ -350,11 +362,20 @@ class Overlay:
         x, y = self._pos(w, h)
         self._apply_geom(x, y, w, h, topmost=True)
 
-    def _fit_height(self) -> None:
+    def _fit_height(self, min_delta: int = 2) -> None:
+        """按显示行数调整高度。
+
+        以前每次渲染都 `_apply_geom(300)` + `_apply_geom(真实高度)`，等于每帧搬两次窗口：
+        流式上屏时这就是掉帧的来源。现在只有在宽度变了（首次/改配置）才先用 300 兜底量一次，
+        之后高度变化小于 `min_delta` 就完全不动窗口；变高立刻长，变矮等这一句结束再收
+        （流式过程中忽高忽低比慢更难看）。
+        """
         w = int(self.cfg.get("overlay_width", 1100))
-        # 先按目标宽度摆一次，折行行数才是真实的（否则按 1 字符宽算出来是天量）
-        x, y = self._pos(w, 300)
-        self._apply_geom(x, y, w, 300)
+        if self._geom[0] != w:
+            # 先按目标宽度摆一次，折行行数才是真实的（否则按 1 字符宽算出来是天量）
+            x, y = self._pos(w, 300)
+            self._apply_geom(x, y, w, 300)
+            self._geom = (w, 300)
         try:
             self.text.update_idletasks()
             # 带 update 参数：强制先排版再数显示行，否则内容变多后会数少，
@@ -363,17 +384,23 @@ class Overlay:
         except Exception:
             lines = int(self.text.index("end-1c").split(".")[0])
         lines = max(1, lines)
-        h = 22 + lines * self.f_zh.metrics("linespace") + 14
+        h = int(22 + lines * self.f_zh.metrics("linespace") + 14)
         self.text.configure(height=lines)
-        x, y = self._pos(w, int(h))    # 自动底部对齐时 y 随高度一起变
+        cur_h = self._geom[1]
+        if abs(h - cur_h) <= min_delta:
+            return
+        if h < cur_h and self._stream_on:
+            return                     # 流式中途不收，等完整结果再收
+        x, y = self._pos(w, h)         # 自动底部对齐时 y 随高度一起变
         # 内容长到屏幕放不下时，把底边贴到屏幕内（上移），否则「语法/生词」那几行会被屏幕切掉。
         # 只影响这一次摆放，不改 _cur_pos——否则松手落盘的是「被顶上去的位置」而不是你拖到的位置。
         try:
             vx, vy, sw, sh = winapi.virtual_screen()
-            y = min(max(int(y), vy), max(vy, vy + sh - int(h) - 4))
+            y = min(max(int(y), vy), max(vy, vy + sh - h - 4))
         except Exception:
             pass
-        self._apply_geom(x, y, w, int(h))
+        self._apply_geom(x, y, w, h)
+        self._geom = (w, h)
 
     def _toggle_lock(self) -> None:
         locked = not bool(self.cfg.get("overlay_locked"))
@@ -468,38 +495,97 @@ class Overlay:
     def show(self, res: dict) -> None:
         self._current = res or {}
         self._partial_n = 0
-        self._render()
+        self._stream_on = False
+        self._co.cancel()          # 完整结果优先，丢掉还没画的增量
+        self._render(fade=True)
+        self._notes_shown = (res or {}).get("notes") or ""
         if not self.cfg.get("overlay_visible", True):
             self.show_window()
 
     def show_partial(self, data: dict) -> None:
-        """流式中间态：中文边生成边上屏，语法区显示进度。
+        """流式中间态：中文边生成边上屏。
 
-        只为了「别让用户干等 3 秒」，所以做了节流：每 3 次增量才重新量一次高度，
-        否则窗口尺寸每 70ms 抖一次，比慢更难看。
+        以前每来一个增量就「删全文 + 重新 insert + 重量高度 + 重设窗口」，
+        在 Tk 里等于每帧都重排版再搬窗口——肉眼就是「字母一个个蹦、还掉帧」。
+        现在只做两件事：把新增的那几个字**追加**到句尾（不碰其它内容），
+        并且把一串增量合并到同一帧里重绘；高度只在行数真的变了才改。
         """
         zh = data.get("zh") or ""
         if not zh:
             return
+        notes = "语法解析中…" if data.get("stage") == "grammar" else ""
         self._current = {
             "jp": data.get("jp") or "",
             "zh": zh,
             "grammar": [],
             "vocab": [],
-            "notes": "语法解析中…" if data.get("stage") == "grammar" else "",
+            "notes": notes,
             "_partial": True,
         }
         self._partial_n = getattr(self, "_partial_n", 0) + 1
         refit = data.get("stage") == "grammar" or self._partial_n % 3 == 1
-        self._render(fit=refit)
+        self._stream_on = True
+        # 提示语（如「语法解析中…」）变化时必须走全量重绘，纯追加画不出新的一行
+        force = notes != getattr(self, "_notes_shown", "")
+        if force or not self._append_stream(zh, refit):
+            self._render(fit=refit, fade=False)
         if not self.cfg.get("overlay_visible", True):
             self.show_window()
 
-    def _render(self, fit: bool = True) -> None:
+    def _append_stream(self, zh: str, refit: bool) -> bool:
+        """把中文的增量追加到句尾；做不到（换句/结构变了）就返回 False 走全量重绘。"""
+        if not self._stream_text or not zh.startswith(self._stream_text):
+            return False
+        delta = zh[len(self._stream_text):]
+        if not delta:
+            return True
+        t = self.text
+        try:
+            t.configure(state="normal")
+            t.insert("zh_end", delta, "zh")
+            t.configure(state="disabled")
+        except Exception:
+            return False
+        first = not self._stream_text
+        self._stream_text = zh
+        if refit:
+            self._schedule_fit()
+        return True
+
+    def _fade_zh(self) -> None:
+        """新台词的颜色淡入：只改 tag 前景色，不动布局、不搬窗口。"""
+        if not self._anim_on:
+            return
+        base = "#010203" if getattr(self, "_bg_visible", False) else self.theme.get("bg", "#12161a")
+        start = animate.mix(base, self._zh_color, 0.35)
+        try:
+            if self._fade:
+                self._fade.cancel()
+        except Exception:
+            pass
+
+        def frame(t: float) -> None:
+            self.text.tag_configure("zh", foreground=animate.mix(start, self._zh_color, t))
+
+        def done() -> None:
+            try:
+                self.text.tag_configure("zh", foreground=self._zh_color)
+            except Exception:
+                pass
+
+        self._fade = animate.Tween(self.win, self._anim_ms, on_frame=frame, on_done=done)
+        self._fade.start()
+
+    def _schedule_fit(self) -> None:
+        """合并高度重算：一帧内多次请求只量一次。"""
+        self._co.call(self._fit_height)
+
+    def _render(self, fit: bool = True, fade: bool = False) -> None:
         res = self._current
         t = self.text
         t.configure(state="normal")
         t.delete("1.0", "end")
+        self._stream_text = ""
         if not res:
             t.insert("end", "等待台词…（把框选区域对准游戏文本框，按 F9 或开启自动）", "jp")
             t.configure(state="disabled")
@@ -515,10 +601,14 @@ class Overlay:
         zh = res.get("zh") or ""
         if zh:
             t.insert("end", zh, "zh")
-            if res.get("_partial") and not res.get("notes"):
-                # 流式光标：让「还在生成」一眼可见，而不是看起来卡住了
-                t.insert("end", "▍", "cur")
             t.insert("end", "\n")
+            # 流式增量要追加在「这句中文的末尾」：把标记打在中文字后面（end-2c = 换行符之前），
+            # 右重力 = 之后在同一位置插入时，标记会跟着新文字一起往右走，追加顺序才是正的。
+            t.mark_set("zh_end", "end-2c")
+            t.mark_gravity("zh_end", "right")
+            self._stream_text = zh
+            if fade:
+                self._fade_zh()
 
         gram = res.get("grammar") or []
         if gram:

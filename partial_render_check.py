@@ -4,11 +4,14 @@
 """
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 
-from galtl.config import Config
-from galtl.ui_overlay import Overlay
-from galtl.winapi import set_dpi_aware
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from galtl.config import Config  # noqa: E402
+from galtl.ui_overlay import Overlay  # noqa: E402
+from galtl.winapi import set_dpi_aware  # noqa: E402
 
 
 def main() -> int:
@@ -25,10 +28,13 @@ def main() -> int:
     zh = "都这个点还没睡，明天早上起不来我会担心的……真是的。"
 
     # 1) 流式增量：前 6 个字符
+    shown = []
     for i in range(1, 7):
         ov.show_partial({"jp": jp, "zh": zh[: i * 3], "ms": i * 70})
+        shown.append(zh[: i * 3] in ov.text.get("1.0", "end"))
     t1 = ov.text.get("1.0", "end").strip()
-    ok1 = "都这个点" in t1 and "▍" in t1
+    # 1.0.13 起去掉了闪烁光标 ▍：增量直接追加在句尾，文本本身就是进度条
+    ok1 = all(shown) and zh[:18] in t1
     print(f"[{'ok' if ok1 else '!!'}] 增量渲染：{t1.splitlines()[-1][:34]}")
 
     # 2) 语法阶段提示

@@ -15,7 +15,7 @@ import logging
 import tkinter as tk
 from tkinter import font as tkfont
 
-from . import winapi
+from . import animate, winapi
 
 log = logging.getLogger("galtl.cover")
 
@@ -186,6 +186,7 @@ class CoverWindow:
             return
         if zh == self._text and self._visible and not self._dipped and abs(glyph_px - self._glyph_px) < 0.5:
             return
+        changed = zh != self._text
         self._text = zh
         self._glyph_px = float(glyph_px or 0.0)
         self._render(zh)
@@ -194,6 +195,35 @@ class CoverWindow:
             self.win.deiconify()
             self.win.lift()
             self._visible = True
+            if changed:
+                self._fade_in()
+
+    def _fade_in(self) -> None:
+        """新中文盖上来的那一下做个淡入，避免「啪」地一下换字。"""
+        if not bool(self.cfg.get("anim_enabled", True)):
+            return
+        target = max(0.2, min(1.0, float(self.cfg.get("cover_alpha", 1.0) or 1.0)))
+        ms = int(self.cfg.get("anim_ms", 160) or 160)
+        try:
+            if getattr(self, "_fade", None):
+                self._fade.cancel()
+        except Exception:
+            pass
+
+        def frame(t: float) -> None:
+            try:
+                self.win.attributes("-alpha", target * (0.45 + 0.55 * t))
+            except Exception:
+                pass
+
+        def done() -> None:
+            try:
+                self.win.attributes("-alpha", target)
+            except Exception:
+                pass
+
+        self._fade = animate.Tween(self.win, ms, on_frame=frame, on_done=done)
+        self._fade.start()
 
     def hide(self) -> None:
         if self._visible:

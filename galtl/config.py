@@ -62,6 +62,9 @@ DEFAULTS: dict[str, Any] = {
     "show_notes": True,
     "overlay_locked": False,       # True = 鼠标穿透（不挡点击）
     "overlay_visible": True,
+    # ---- 动画（字幕条流式上屏 + 覆盖层淡入）----
+    "anim_enabled": True,      # 关掉就是「直接跳出来」，老机器/远程桌面可关
+    "anim_ms": 160,            # 淡入时长；越小越快，0 等同关闭
     # ---- 覆盖原文（把中文直接盖在游戏原文上）----
     "cover_mode": False,           # 按钮/F11 开关，开启后译文盖住原日文
     "cover_alpha": 1.0,
