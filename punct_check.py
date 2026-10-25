@@ -90,7 +90,7 @@ check("inkprobe 认出点", inkprobe.dots_like(png), str(inkprobe.analyze(png)))
 eng2 = Engine(cfg, Store(":memory:"), queue.Queue())
 eng2.cfg.set("mode", "ocr"); eng2.cfg.set("punct_fallback", True)
 eng2.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()   # OCR 一个都不认识
-eng2.effective_scale = lambda w, h: 1.0
+eng2.effective_scale = lambda w, h, factor=None: 1.0
 eng2._capture_region = lambda: (0, 0, 300, 60)
 import galtl.pipeline as _pl
 _pl.winapi.grab_png = lambda *a, **k: (png, 300, 60)
@@ -110,7 +110,7 @@ buf2 = io.BytesIO(); img2.save(buf2, format="PNG")
 eng3 = Engine(cfg, Store(":memory:"), queue.Queue())
 eng3.cfg.set("mode", "ocr"); eng3.cfg.set("punct_fallback", True)
 eng3.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()
-eng3.effective_scale = lambda w, h: 1.0
+eng3.effective_scale = lambda w, h, factor=None: 1.0
 eng3._capture_region = lambda: (0, 0, 300, 60)
 _pl.winapi.grab_png = lambda *a, **k: (buf2.getvalue(), 300, 60)
 text3, _, _ = eng3.grab_text()
@@ -132,7 +132,7 @@ try:
     eng4 = Engine(cfg, Store(":memory:"), queue.Queue())
     eng4.cfg.set("mode", "ocr"); eng4.cfg.set("punct_fallback", True)
     eng4.ocr = lambda: type("O", (), {"recognize_png": lambda self, b: []})()
-    eng4.effective_scale = lambda w, h: 1.0
+    eng4.effective_scale = lambda w, h, factor=None: 1.0
     eng4._capture_region = lambda: (0, 0, 300, 55)
     _pl.winapi.grab_png = lambda *a, **k: (_png, 300, 55)
     t4, _, _ = eng4.grab_text()

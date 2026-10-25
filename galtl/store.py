@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from .paths import DB_PATH
-from .textutil import dedupe_key
+from .textutil import dedupe_key, similar_key, stable_key
 
 log = logging.getLogger("galtl.store")
 
@@ -124,6 +124,41 @@ class Store:
                 return {"lines": int(total), "replays": int(hits)}
             except Exception:
                 return {"lines": 0, "replays": 0}
+
+    def find_similar(self, jp: str, limit: int = 400) -> dict | None:
+        """在最近几百条缓存里找「同一句台词的另一种读法」，命中就返回它的结果。
+
+        为什么要走库而不只看内存：同一句台词在重启程序后仍会被 OCR 读成别的样子
+        （句首被对话框边缘糊成「~・ユ」，或中段漏读），内存里的 `_recent` 已经清空，
+        于是又翻了一遍，屏幕上就成了同一句在两套译文之间来回闪。
+        """
+        key = stable_key(jp)
+        if len(key) < 4:
+            return None
+        with self._lock:
+            try:
+                rows = self._db().execute(
+                    "SELECT key,jp,payload,ts,hits FROM lines ORDER BY ts DESC LIMIT ?", (limit,)
+                ).fetchall()
+            except Exception:
+                return None
+        for old_key, old_jp, payload, ts, hits in rows:
+            if old_key == key:
+                continue
+            if not similar_key(key, old_key):
+                continue
+            try:
+                data = json.loads(payload)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            data.setdefault("jp", old_jp)
+            data["ts"] = ts
+            data["hits"] = hits
+            data["similar_key"] = old_key
+            return data
+        return None
 
     def recent(self, limit: int = 20) -> list[dict]:
         with self._lock:

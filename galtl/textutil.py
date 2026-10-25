@@ -118,6 +118,11 @@ def similar_key(a: str, b: str, threshold: float = 0.9) -> bool:
         if short < 10:
             return False
     if abs(la - lb) > max(2, int(0.25 * max(la, lb))):
+        # 长度差很大时还有两种「同一句」的可能：中段整块被漏读（子序列），
+        # 或者短版是长版的一段前缀 + 尾巴噪声（下面的前缀规则够不着，因为短版更短）。
+        short, long_ = (a, b) if la <= lb else (b, a)
+        if len(long_) and len(short) / len(long_) >= 0.45 and _is_subsequence(short, long_):
+            return True
         return False
     # 前缀覆盖率：OCR 把末尾几个字读成噪声（「ていなか」→「ていなガ0干恋万花」）时，
     # 两串前缀完全一致、只有尾部不同。字面相似度会被尾部噪声拉低，
@@ -130,7 +135,16 @@ def similar_key(a: str, b: str, threshold: float = 0.9) -> bool:
         common = i + 1
     if n >= 8 and common / n >= 0.7:
         return True
+    short, long_ = (a, b) if la <= lb else (b, a)
+    if len(long_) and len(short) / len(long_) >= 0.45 and _is_subsequence(short, long_):
+        return True
     return difflib.SequenceMatcher(None, a, b).quick_ratio() >= threshold
+
+
+def _is_subsequence(short: str, long_: str) -> bool:
+    """short 的字符是否按顺序都出现在 long_ 里（允许中间有缺口）。"""
+    it = iter(long_)
+    return all(ch in it for ch in short)
 
 
 def display_join(lines: list[str]) -> str:

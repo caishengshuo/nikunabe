@@ -42,3 +42,8 @@ promo/
 # 本地宣传素材（不进仓库）
 小黑盒/
 _followup_cfg.json
+
+# 实机联调用的临时探针脚本与截图
+probe_*.py
+probe_*.txt
+probe_*.png

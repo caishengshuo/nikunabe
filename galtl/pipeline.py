@@ -129,6 +129,7 @@ class Engine:
         self._prestart_seq = -1              # 已经提前发过讲解请求的句子号
         self._base_evt: threading.Event | None = None
         self._last_result: dict | None = None  # 最近一次 translate 的完整结果（讲解回填要用）
+        self._recent: list[tuple[str, dict]] = []  # 最近翻过的 (键, 结果)，用于「同一句的另一版读数」复用
         self._context: list[str] = []
         self._last_error_ts = 0.0
         self._slow_hint_shown = False
@@ -254,13 +255,14 @@ class Engine:
         except Exception as exc:
             self.emit("error", f"OCR 初始化异常：{exc}")
 
-    def effective_scale(self, w: int, h: int) -> float:
+    def effective_scale(self, w: int, h: int, factor: float | None = None) -> float:
         """把「放大倍数」限制在 OCR 能跑得动的像素预算内。
 
         框选整块屏幕再乘 2 倍会生成 5000×3000 的图，一帧要 3 秒以上，
         自动翻译就废了；这里按像素预算自动收缩（下限 0.5，不会糊到认不出）。
+        `factor` 是本次想用的倍数（grab_text 会传 1.0 或自适应放大值）。
         """
-        want = float(self.cfg.get("upscale", 2.0) or 1.0)
+        want = float(self.cfg.get("upscale", 1.6) or 1.0) if factor is None else float(factor)
         budget = float(self.cfg.get("ocr_pixel_budget", 3_000_000) or 0)
         area = float(max(1, int(w) * int(h)))
         if budget <= 0:
@@ -268,23 +270,65 @@ class Engine:
         fit = (budget / area) ** 0.5
         return max(0.5, min(want, fit))
 
+    @staticmethod
+    def _ocr_quality(lines: list[dict]) -> float:
+        """给一版 OCR 结果打分：日文字符越多越好，ASCII/符号噪声扣分。
+
+        只用它来比较「同一个框的两版识别结果」，不做绝对判断。
+        """
+        score = 0.0
+        for ln in lines:
+            for ch in (ln.get("text") or ""):
+                o = ord(ch)
+                if 0x3040 <= o <= 0x309F or 0x30A0 <= o <= 0x30FF:   # 假名
+                    score += 2.0
+                elif 0x4E00 <= o <= 0x9FFF:                            # 汉字
+                    score += 1.6
+                elif ch in "、。！？…「」『』ー〜":
+                    score += 0.2
+                elif o < 0x80:                                         # ASCII（多为误读）
+                    score -= 1.0
+                else:
+                    score -= 0.5
+        return score
+
     def grab_text(self) -> tuple[str, bytes, float]:
         """截屏 + OCR，返回 (清洗后文本, png, 耗时ms)。"""
         x, y, w, h = self._capture_region()
         if w < 8 or h < 8:
             raise RuntimeError("尚未框选字幕区域")
         t0 = time.perf_counter()
-        self._cover_dip(True)
-        try:
-            png, _, _ = winapi.grab_png(
-                x, y, w, h,
-                scale=self.effective_scale(w, h),
-                binarize=bool(self.cfg.get("binarize", False)),
-                exclude=self._exclude_rect(x, y, w, h),
-            )
-        finally:
-            self._cover_dip(False)
-        lines = self.ocr().recognize_png(png)
+
+        def _shot(factor: float) -> tuple[bytes, list[dict]]:
+            self._cover_dip(True)
+            try:
+                png, _, _ = winapi.grab_png(
+                    x, y, w, h,
+                    scale=self.effective_scale(w, h, factor),
+                    binarize=bool(self.cfg.get("binarize", False)),
+                    exclude=self._exclude_rect(x, y, w, h),
+                )
+            finally:
+                self._cover_dip(False)
+            return png, self.ocr().recognize_png(png)
+
+        # 送进 OCR 前该不该放大：实测这台机器上，把 50px 的字再放大 1.6 倍，
+        # 行首「電車を」会被认成「~1を」、放大 2 倍连「捕まえた」都掉字——
+        # Windows OCR 在原生尺寸下最准。所以默认原尺寸，只有字确实很小
+        # （行高 < 20px）才放大到 28px 左右再认一遍，两版取更像台词的那版。
+        png, lines = _shot(1.0)
+        scale = 1.0
+        hs = sorted(int(l.get("h") or 0) for l in lines if (l.get("text") or "").strip())
+        hs = [v for v in hs if v >= 4]
+        small = (hs[len(hs) // 2] if hs else 0)
+        cap = float(self.cfg.get("upscale", 1.6) or 0.0)
+        if small and small < 20 and cap > 1.05:
+            factor = max(1.2, min(cap, 2.0, 28.0 / small))
+            if factor > 1.05:
+                png2, lines2 = _shot(factor)
+                if self._ocr_quality(lines2) > self._ocr_quality(lines):
+                    png, lines, scale = png2, lines2, factor
+
         merged = merge_lines(lines)
         text = strip_nameplate(normalize(display_join(merged)))
         # OCR 会把「上一句的尾巴 / 任务栏 / 聊天窗口」一起读进来，拼成多行乱码。
@@ -316,7 +360,6 @@ class Engine:
         # 原文字号：OCR 给的是放大后的像素，除回去就是屏幕上真实的字高。
         # 覆盖原文要按这个字号画中文，否则一眼就能看出「块不一样大」。
         try:
-            scale = self.effective_scale(w, h) or 1.0
             hs = sorted(int(l.get("h") or 0) for l in lines if (l.get("text") or "").strip())
             hs = [v for v in hs if v >= 6]
             got = (hs[len(hs) // 2] / scale) if hs else 0.0
@@ -384,6 +427,26 @@ class Engine:
                                    "cached": True, "engine": "cache"}
                     self._last_result = hit
                     return hit
+
+        # 这一句可能只是「上一句的另一版读数」：OCR 偶尔会把同一行的中段漏掉
+        # （「…タクシーを捕まえたものの、いつの間に」→「…タクシー」），
+        # 键不同、缓存查不到，于是又翻一遍，屏幕上就是同一句在两套译文之间闪。
+        # 内存里留着最近翻过的键，遇到「是它的子序列 / 前缀」就直接复用那份译文。
+        if self.cfg.get("reuse_similar", True):
+            reuse = self._find_recent(jp_text)
+            if not reuse:
+                # 内存里的「最近翻过」只覆盖本次运行；重启后同一句的另一种读法仍会
+                # 被当成新台词重翻一遍，屏幕上就是两套译文交替出现。所以再查一次库。
+                reuse = self.store.find_similar(jp_text)
+            if reuse:
+                reuse = dict(reuse)
+                reuse.pop("similar_key", None)
+                reuse["zh"] = _one_line(reuse.get("zh") or "")
+                reuse["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
+                                 "cached": True, "engine": "cache:similar"}
+                self.stats["cache"] += 1
+                self._last_result = reuse
+                return reuse
 
         if self.engine_kind == "ms" and not self.ms_ready:
             # 微软翻译模式但没填密钥：本地降级（仍给语法提示），并把该去哪儿填说清楚
@@ -464,8 +527,44 @@ class Engine:
             log.info("译文为空，跳过入库：%s", (res.get("jp") or jp_text)[:40])
         elif self.cfg.get("use_cache", True):
             self.store.put(res.get("jp") or jp_text, res)
+        self._remember(res)
         self._last_result = res
         return res
+
+    # ---------- 近义复用 ----------
+    def _remember(self, res: dict) -> None:
+        """记下这一句（键 + 结果），供 _find_recent 判断「是同一句的另一版读数」。"""
+        jp = (res.get("jp") or "").strip()
+        zh = (res.get("zh") or "").strip()
+        if not jp or not zh:
+            return
+        key = stable_key(jp)
+        if len(key) < 6:
+            return
+        self._recent.append((key, res))
+        if len(self._recent) > 24:
+            del self._recent[:-24]
+
+    def _find_recent(self, jp_text: str) -> dict | None:
+        """找最近翻过的、与这句是「同一句」的结果；没有就返回 None。
+
+        判据用 similar_key（包含 / 前缀覆盖 / 子序列），比数据库精确键宽松，
+        但要求两边都是键、长度足够，避免把「はい」这种短句错配。
+        """
+        if not self._recent:
+            return None
+        key = stable_key(jp_text)
+        if len(key) < 6:
+            return None
+        for old_key, res in reversed(self._recent):
+            if old_key == key:
+                continue
+            if similar_key(key, old_key):
+                out = dict(res)
+                out["jp"] = jp_text          # 显示这一帧读到的原句
+                out["reused_from"] = res.get("jp")
+                return out
+        return None
 
     def _translate_two_phase(self, jp_text: str, kwargs: dict,
                             context: list[str], glossary: str,

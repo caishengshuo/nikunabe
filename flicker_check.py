@@ -57,6 +57,11 @@ def main() -> int:
     chk("长版 contains 短版", textutil.similar_key(k_trunc, k_full))
     chk("短版 contains 长版", textutil.similar_key(k_full, k_trunc))
     chk("带噪声尾巴也算同一句", textutil.similar_key(k_noisy, k_full))
+    # 中段整块漏读：真机缓存里出现过「…タクシー」与完整句各存一条
+    HOLE = "電車を降りて、駅前でタクシーかうたたねしていたらしい。"
+    WHOLE = "電車を降りて、駅前でタクシーを捕まえたものの、いつの間にかうたたねしていたらしい。"
+    chk("中段漏读也算同一句",
+        textutil.similar_key(textutil.stable_key(HOLE), textutil.stable_key(WHOLE)))
     chk("两句不相干的台词不算同一句",
         not textutil.similar_key("おはよう、いい天気だね。", "ちょっと待ってくれないか。"))
     chk("短键不参与判定（<4 字）", not textutil.similar_key("はい", "はい。"))
@@ -129,6 +134,29 @@ def main() -> int:
     chk("翻页后旧句残片也被丢", dispatch("partial", {"seq": 3, "zh": "本句残片"}) == "dropped")
     chk("新句增量放行", dispatch("partial", {"seq": 4, "zh": "下一句"}) == "shown")
     chk("屏幕只有新内容", shown["partial"] == ["本句增量", "下一句"], str(shown["partial"]))
+
+    print("\n=== 5. 重启后仍复用：库里的近义句直接借用译文 ===")
+    import tempfile
+    from pathlib import Path
+
+    from galtl.store import Store as RealStore
+
+    tmp = Path(tempfile.mkdtemp(prefix="flicker_")) / "c.db"
+    st = RealStore(tmp)
+    st.put(FULL, {"jp": FULL, "zh": "上一版译文", "grammar": [{"pattern": "〜しか"}],
+                  "vocab": [{"word": "大雑把"}], "notes": ""})
+    got = st.find_similar(TRUNC)
+    chk("冷启动也能在库里找到同一句", bool(got), repr((got or {}).get("zh")))
+    chk("找到的是那一句的译文", (got or {}).get("zh") == "上一版译文")
+    chk("不相干的台词找不到近义", st.find_similar("ちょっと待ってくれないか。") is None)
+
+    eng2 = pipeline.Engine(Cfg(), st, queue.Queue())
+    eng2.cfg.data["use_cache"] = True
+    res = eng2.translate(TRUNC)
+    chk("translate 走 cache:similar 而不是再翻一次",
+        (res.get("meta") or {}).get("engine") == "cache:similar", repr(res.get("zh")))
+    chk("复用来的译文是同一句", res.get("zh") == "上一版译文")
+    st.close()
 
     print("\n结果：" + ("全部通过" if not FAILS else "失败 %d 项: %s" % (len(FAILS), FAILS)))
     return 0 if not FAILS else 1
