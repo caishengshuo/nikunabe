@@ -123,6 +123,8 @@ def similar_key(a: str, b: str, threshold: float = 0.9) -> bool:
         short, long_ = (a, b) if la <= lb else (b, a)
         if len(long_) and len(short) / len(long_) >= 0.45 and _is_subsequence(short, long_):
             return True
+        if _anchored(short, long_):
+            return True
         return False
     # 前缀覆盖率：OCR 把末尾几个字读成噪声（「ていなか」→「ていなガ0干恋万花」）时，
     # 两串前缀完全一致、只有尾部不同。字面相似度会被尾部噪声拉低，
@@ -138,7 +140,36 @@ def similar_key(a: str, b: str, threshold: float = 0.9) -> bool:
     short, long_ = (a, b) if la <= lb else (b, a)
     if len(long_) and len(short) / len(long_) >= 0.45 and _is_subsequence(short, long_):
         return True
+    # 尾部/中段锚定：OCR 把句首糊成「~・ユ」、把中段整块漏掉、把句尾截断时，
+    # 开头对不上、子序列也被那个糊出来的假名挡住（「ユ」在原文里根本没有）。
+    # 但台词里总有长段一字不差的连续片段，所以「共同子串够长」也足以认定同一句。
+    if _anchored(short, long_):
+        return True
     return difflib.SequenceMatcher(None, a, b).quick_ratio() >= threshold
+
+
+def _anchored(short: str, long_: str) -> bool:
+    """短版是否与长版共享一段足够长的连续片段（长度差已由调用方保证不算悬殊）。"""
+    if len(short) < 10 or not long_:
+        return False
+    if len(short) / len(long_) < 0.5:
+        return False
+    m = difflib.SequenceMatcher(None, short, long_).find_longest_match(
+        0, len(short), 0, len(long_)
+    )
+    if m.size >= 8:
+        return True
+    return _common_suffix(short, long_) >= 6
+
+
+def _common_suffix(a: str, b: str) -> int:
+    """两串末尾相同的字符数。"""
+    n = 0
+    for x, y in zip(reversed(a), reversed(b)):
+        if x != y:
+            break
+        n += 1
+    return n
 
 
 def _is_subsequence(short: str, long_: str) -> bool:

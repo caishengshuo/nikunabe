@@ -247,6 +247,14 @@ def main() -> int:
     winapi.set_dpi_aware()
     cfg = Config()
     store = Store()
+    # 启动时把库里「同一句台词的多种读法」并成一条：OCR 每帧读出来的样子都不一样
+    # （首字被对话框边缘糊住、中段漏读），不并的话同一句会有两套译文轮流上屏。
+    try:
+        got = store.compact()
+        if got.get("merged"):
+            log.info("启动时合并了 %d 条重复读法", got["merged"])
+    except Exception:
+        log.debug("缓存合并不影响启动", exc_info=True)
     events: "queue.Queue" = queue.Queue(maxsize=256)
     engine = Engine(cfg, store, events)
 
