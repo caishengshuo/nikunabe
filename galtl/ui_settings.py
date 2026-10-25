@@ -50,16 +50,12 @@ class SettingsDialog:
 
     # ---------- 构建 ----------
     def _build(self):
-        nb = ttk.Notebook(self.win)
-        nb.pack(fill="both", expand=True, padx=10, pady=10)
-        self._tab_engine(nb)
-        self._tab_model(nb)
-        self._tab_capture(nb)
-        self._tab_display(nb)
-        self._tab_misc(nb)
-
+        # 按钮行先 pack（side="bottom"），Notebook 后 pack：
+        # pack 是按调用顺序分配空间的，先把 Notebook 放进去再放按钮行的话，
+        # Notebook 的 expand=True 会把高度全吃掉，按钮行被挤到窗口外——
+        # 表现就是「一打开设置看不到保存并应用，得把窗口拉大」。
         bar = ttk.Frame(self.win)
-        bar.pack(fill="x", padx=12, pady=(0, 12))
+        bar.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
         self.btn_reset = ttk.Button(bar, text="恢复默认", command=self._reset)
         self.btn_reset.pack(side="left")
         self.btn_cancel = ttk.Button(bar, text="取消", command=self._close)
@@ -69,6 +65,84 @@ class SettingsDialog:
         self.lbl_verify = ttk.Label(bar, text="", foreground="#7a8494")
         self.lbl_verify.pack(side="right", padx=10)
         self._buttons = [self.btn_reset, self.btn_cancel, self.btn_save]
+        ttk.Separator(self.win, orient="horizontal").pack(
+            side="bottom", fill="x", padx=12)
+
+        nb = ttk.Notebook(self.win)
+        nb.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 8))
+        self._nb = nb
+        self._tab_engine(nb)
+        self._tab_model(nb)
+        self._tab_capture(nb)
+        self._tab_display(nb)
+        self._tab_misc(nb)
+        self._fit_window()
+
+    def _fit_window(self):
+        """把窗口调到「内容刚好放得下」，并按屏幕夹一下。
+
+        150% 缩放 + 5 个页签时，内容往往比 720x620 高；窗口开小了按钮行
+        虽然用 side="bottom" 保住了，但 Notebook 里的输入框会被切掉。
+        这里按 Notebook 自己报的 reqheight 算一次，屏幕上放不下才允许滚动。
+        """
+        try:
+            self.win.update_idletasks()
+            sw = self.win.winfo_screenwidth()
+            sh = self.win.winfo_screenheight()
+            need_w = max(760, self.win.winfo_reqwidth())
+            need_h = self.win.winfo_reqheight()
+            # 屏幕尺寸在开了缩放的机器上可能是逻辑值，留足余量
+            w = int(min(need_w, sw * 0.92))
+            h = int(min(need_h, sh * 0.88))
+            h = max(h, 520)
+            self.win.geometry(f"{w}x{h}")
+            self.win.minsize(int(min(660, w)), 480)
+            if need_h > h:
+                self._make_tabs_scrollable(need_h - h)
+        except tk.TclError:
+            pass
+
+    def _make_tabs_scrollable(self, overflow: int) -> None:
+        """屏幕实在放不下时，给每个页签套一层可滚动的画布。
+
+        Tk 没有内置的滚动 Frame，常规做法是 Canvas + 内嵌窗口。
+        只有当内容真的超出屏幕才套，避免平时多一层鼠标滚轮行为。
+        """
+        try:
+            pages = list(self._nb.tabs())
+        except tk.TclError:
+            return
+        for name in pages:
+            inner = self.win.nametowidget(name)
+            if getattr(inner, "_wrapped", False):
+                continue
+            canvas = tk.Canvas(self._nb, highlightthickness=0, borderwidth=0)
+            canvas.configure(background=self._canvas_bg())
+            vs = ttk.Scrollbar(self._nb, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=vs.set)
+            text = str(self._nb.tab(name, "text"))
+            self._nb.forget(name)
+            holder = ttk.Frame(self._nb)
+            holder._wrapped = True                       # type: ignore[attr-defined]
+            canvas.create_window((0, 0), window=inner, anchor="nw")
+            canvas.pack(side="left", fill="both", expand=True)
+            vs.pack(side="right", fill="y")
+            inner.bind("<Configure>",
+                       lambda e, c=canvas: c.configure(scrollregion=c.bbox("all")))
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                canvas.bind_all(
+                    seq,
+                    lambda e, c=canvas: c.yview_scroll(
+                        int(-1 * (e.delta / 120)) if getattr(e, "delta", 0)
+                        else (-1 if getattr(e, "num", 5) == 4 else 1), "units"),
+                )
+            self._nb.add(holder, text=text)
+
+    def _canvas_bg(self) -> str:
+        try:
+            return str(ttk.Style().lookup("TFrame", "background") or "#20242b")
+        except tk.TclError:
+            return "#20242b"
 
     def _tab_engine(self, nb):
         f = ttk.Frame(nb)
