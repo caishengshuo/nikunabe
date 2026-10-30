@@ -60,6 +60,15 @@ class CoverWindow:
         self._dead = False                      # 关窗/退出后置位，之后不再碰 Tk
         self._enabled = bool(cfg.get("cover_mode", False))
         self.excluded = False
+        # 内嵌：把覆盖层挂成「游戏窗口的 owned window」，从此中文永远在游戏之上，
+        # 并且跟着游戏一起移动/最小化，越出游戏窗口的部分会被裁掉。
+        # 为什么不直接 SetParent 成子窗口：实测子窗口不能设 WDA_EXCLUDEFROMCAPTURE
+        # （probe_embed.py：[C] SetAffinity(child) 返回 False，洋红占比 0.098 没变），
+        # 那样 OCR 就会读到我们自己的中文。owned window 是顶层窗口，亲和照旧有效。
+        self._embed = bool(cfg.get("cover_embed", True))
+        self._game_hwnd = 0                     # 内嵌目标（游戏窗口句柄）
+        self._anchor = None                     # 识别区在「客户区坐标」里的 (dx, dy)
+        self._hidden_by_game = False            # 因为游戏最小化而临时藏起来
         # cover_capture:
         #   exclude（默认）—— 覆盖层永久对截屏/录制不可见：OCR 绝不会读到自己，
         #                    但 NVIDIA/录屏软件录出来的是「没盖中文的原画面」。
@@ -137,6 +146,127 @@ class CoverWindow:
         self._apply_exclusion(at_rest=True)
         return self.capture_mode
 
+    def set_embed(self, on: bool) -> bool:
+        """打开/关闭内嵌（设置页用）。关掉时立刻解绑，回到普通浮窗行为。"""
+        self._embed = bool(on)
+        self.cfg.data["cover_embed"] = self._embed
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        if not self._embed:
+            self.unbind_game()
+            if self._visible and not self._dipped:
+                self._place()
+        else:
+            self.bind_game()
+            if self._visible and not self._dipped:
+                self._place()
+        return self._embed
+
+    # ---------- 内嵌（绑定游戏窗口） ----------
+    def detect_game(self) -> int:
+        """认出该内嵌到哪个窗口：按「谁的窗口装得下这块识别区」做几何匹配。
+
+        注意不能只用 WindowFromPoint——覆盖层自己就压在识别区上，点到的是自己；
+        也不能只信前台窗口，玩家刚点过浏览器时前台是浏览器。
+        """
+        mine = self._hwnd
+        my_pid = winapi.pid_of(mine)
+        if self._rect:
+            x, y, w, h = self._rect
+            for cand in winapi.windows_containing(x, y, w, h, exclude_pid=my_pid):
+                if cand != mine:
+                    return cand
+        fg = winapi.root_of(winapi.foreground_hwnd())
+        if fg and fg != mine and winapi.pid_of(fg) != my_pid:
+            return fg
+        return 0
+
+    def bind_game(self, hwnd: int = 0) -> int:
+        """把覆盖层挂成游戏窗口的 owned window（这就是「内嵌」）。"""
+        if self._dead or not self._embed:
+            return 0
+        game = int(hwnd) if hwnd else self.detect_game()
+        if not game or not winapi.is_window(game):
+            return self._game_hwnd
+        if game == self._game_hwnd:
+            self._recalc_anchor()
+            return game
+        if not winapi.set_owner(self._hwnd, game):
+            log.debug("内嵌失败：set_owner(%s, %s)", self._hwnd, game)
+            return self._game_hwnd
+        self._game_hwnd = game
+        self._recalc_anchor()
+        log.info("覆盖层内嵌到游戏窗口 %s", game)
+        return game
+
+    def unbind_game(self) -> None:
+        if self._game_hwnd:
+            winapi.set_owner(self._hwnd, 0)
+        self._game_hwnd = 0
+        self._anchor = None
+        self._hidden_by_game = False
+
+    def _recalc_anchor(self) -> None:
+        """把识别区换算成「游戏客户区坐标」，之后游戏挪动/缩放都按这个锚点跟随。"""
+        if not self._rect or not self._game_hwnd:
+            self._anchor = None
+            return
+        clip = winapi.client_rect(self._game_hwnd)
+        if not clip:
+            self._anchor = None
+            return
+        cx, cy, _cw, _ch = clip
+        x, y, _w, _h = self._rect
+        self._anchor = (x - cx, y - cy)
+
+    def effective_rect(self) -> tuple[int, int, int, int] | None:
+        """真正该画在哪：内嵌时跟住游戏客户区，并保证整块不越出游戏窗口。"""
+        if not self._rect:
+            return None
+        if not (self._embed and self._game_hwnd):
+            return self._rect
+        clip = winapi.client_rect(self._game_hwnd)
+        if not clip:
+            return self._rect
+        cx, cy, cw, ch = clip
+        if self._anchor is None:
+            self._recalc_anchor()
+        dx, dy = self._anchor or (self._rect[0] - cx, self._rect[1] - cy)
+        _x, _y, w, h = self._rect
+        w = max(24, min(w, cw))
+        h = max(18, min(h, ch))
+        x = cx + dx
+        y = cy + dy
+        # 夹进客户区：宁可贴边，也不让中文跑到游戏窗口外面
+        x = max(cx, min(x, cx + cw - w))
+        y = max(cy, min(y, cy + ch - h))
+        return (int(x), int(y), int(w), int(h))
+
+    def follow(self) -> None:
+        """每秒一次：跟随游戏窗口（移动/缩放/最小化），必要时重新绑。"""
+        if self._dead or not self._embed:
+            return
+        if self._game_hwnd and not winapi.is_window(self._game_hwnd):
+            self._game_hwnd = 0
+            self._anchor = None
+        if not self._game_hwnd:
+            self.bind_game()
+        if self._game_hwnd and winapi.is_minimized(self._game_hwnd):
+            if self._visible and not self._dipped:
+                self.hide()
+                self._hidden_by_game = True
+            return
+        if self._hidden_by_game:
+            self._hidden_by_game = False
+            if self._text:
+                self.show(self._text, self._glyph_px)
+            return
+        if self._visible and not self._dipped:
+            self._place(sample=False)
+            self.raise_above()
+
     # ---------- 状态 ----------
     @property
     def enabled(self) -> bool:
@@ -145,6 +275,10 @@ class CoverWindow:
     @property
     def visible(self) -> bool:
         return self._visible
+
+    @property
+    def game_hwnd(self) -> int:
+        return self._game_hwnd
 
     def set_rect(self, rect) -> None:
         """识别区变化（框选、改变）时跟上；窗口正在显示就立刻挪过去。"""
@@ -160,6 +294,7 @@ class CoverWindow:
         if r != self._rect:
             self._bg_color = None              # 换了区域就重新取样
         self._rect = r
+        self._recalc_anchor()                  # 内嵌时跟着换锚点
         if r and self._visible and not self._dipped:
             self._place()
 
@@ -205,6 +340,12 @@ class CoverWindow:
             self.win.deiconify()
             self.win.lift()
             self._visible = True
+            if self._embed and not self._game_hwnd:
+                # 必须在 deiconify 之后：Tk 给浮动窗口建/换外层 HWND 的时机在映射时，
+                # 提前绑 owner 会被冲掉（实测 owner 读回仍是自己的 root）。
+                self.bind_game()
+                if self._game_hwnd:
+                    self._place(sample=False)
             self.raise_above()
             if changed:
                 self._fade_in()
@@ -308,11 +449,13 @@ class CoverWindow:
         except tk.TclError:
             pass
 
-    def _place(self) -> None:
-        if not self._rect:
+    def _place(self, sample: bool = True) -> None:
+        rect = self.effective_rect()
+        if not rect:
             return
-        self._sample_bg()
-        x, y, w, h = self._rect
+        if sample:
+            self._sample_bg()
+        x, y, w, h = rect
         # 尺寸交给 Tk（geometry），位置+置顶交给 Win32：
         # 只调 SetWindowPos 的话 Tk 下一轮 idle 会按 Text 的请求尺寸把窗口撑大。
         try:

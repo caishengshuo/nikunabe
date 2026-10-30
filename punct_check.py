@@ -1,7 +1,15 @@
-﻿"""纯标点台词的回归：本地判词、规范化、以及不花 token 的直通路径。"""
+﻿import sys as _sys
+if _sys.stdout is None:          # pythonw 下 stdout 是 None，直接 print 会崩
+    _sys.stdout = open("NUL", "w", encoding="utf-8")
+if _sys.stderr is None:
+    _sys.stderr = open("NUL", "w", encoding="utf-8")
+"""纯标点台词的回归：本地判词、规范化、以及不花 token 的直通路径。"""
 import io, queue, sys
 sys.path.insert(0, r"G:\日语")
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from galtl import llm, textutil as T
 from galtl.config import Config

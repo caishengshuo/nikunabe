@@ -1,3 +1,8 @@
+﻿import sys as _sys
+if _sys.stdout is None:          # pythonw 下 stdout 是 None，直接 print 会崩
+    _sys.stdout = open("NUL", "w", encoding="utf-8")
+if _sys.stderr is None:
+    _sys.stderr = open("NUL", "w", encoding="utf-8")
 """闪烁回归：同一句台词的「长版/短版」读数不许来回翻，旧句流式残片不许上屏。
 
 跑法：C:\\Python314\\python.exe flicker_check.py

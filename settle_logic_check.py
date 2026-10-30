@@ -1,6 +1,14 @@
-﻿import io, sys, time
+﻿import sys as _sys
+if _sys.stdout is None:          # pythonw 下 stdout 是 None，直接 print 会崩
+    _sys.stdout = open("NUL", "w", encoding="utf-8")
+if _sys.stderr is None:
+    _sys.stderr = open("NUL", "w", encoding="utf-8")
+import io, sys, time
 sys.path.insert(0, r"G:\日语")
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 import queue
 from galtl.config import Config
 from galtl.pipeline import Engine

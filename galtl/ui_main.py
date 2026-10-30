@@ -400,6 +400,8 @@ class MainWindow:
         if self._closing:
             return
         try:
+            # 内嵌：跟着游戏窗口走（移动/缩放/最小化），顺便重提一次置顶。
+            self.cover.follow()
             if self.cover.visible and self._last_zh:
                 self.cover.raise_above()
         except Exception:
@@ -485,6 +487,11 @@ class MainWindow:
         # 截图可见性可能被改（exclude / record / off）：立刻生效，别等重启
         try:
             self.cover.set_capture_mode(self.cfg.get("cover_capture", "exclude"))
+        except Exception:
+            pass
+        # 内嵌开关也可能被改
+        try:
+            self.cover.set_embed(bool(self.cfg.get("cover_embed", True)))
         except Exception:
             pass
         self.set_status("设置已应用")

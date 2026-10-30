@@ -17,6 +17,7 @@ gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 # ---------- 常量 ----------
 SRCCOPY = 0x00CC0020
+CAPTUREBLT = 0x40000000
 BI_RGB = 0
 DIB_RGB_COLORS = 0
 GWL_EXSTYLE = -20
@@ -128,8 +129,14 @@ def virtual_screen() -> tuple[int, int, int, int]:
 
 
 # ---------- 截屏 ----------
-def capture_bgra(x: int, y: int, w: int, h: int) -> tuple[bytes, int, int]:
-    """抓取屏幕矩形，返回 (BGRA 原始字节, w, h) —— 行序自上而下。"""
+def capture_bgra(x: int, y: int, w: int, h: int,
+                 layered: bool = False) -> tuple[bytes, int, int]:
+    """抓取屏幕矩形，返回 (BGRA 原始字节, w, h) —— 行序自上而下。
+
+    ``layered=True`` 时带上 CAPTUREBLT：普通 BitBlt **拍不到分层窗口**
+    （Tk 设过 ``-alpha`` 的窗口都是分层的），要验证「覆盖层到底有没有画出来」
+    必须用它。OCR 路径保持默认 False——本来就不该把自己画的中文读回去。
+    """
     w = max(1, int(w))
     h = max(1, int(h))
     hdc_screen = user32.GetDC(None)
@@ -153,7 +160,8 @@ def capture_bgra(x: int, y: int, w: int, h: int) -> tuple[bytes, int, int]:
         raise OSError("CreateDIBSection 失败")
     old = gdi32.SelectObject(hdc_mem, hbmp)
     try:
-        ok = gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, int(x), int(y), SRCCOPY)
+        flags = SRCCOPY | CAPTUREBLT if layered else SRCCOPY
+        ok = gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, int(x), int(y), flags)
         if not ok:
             raise OSError("BitBlt 失败（区域超出屏幕？）")
         return ctypes.string_at(ppv, w * h * 4), w, h
@@ -381,6 +389,10 @@ def hwnd_of(widget) -> int:
     return int(widget.winfo_id())
 
 
+GA_PARENT = 1
+GA_ROOT = 2
+
+
 def top_hwnd(widget) -> int:
     """控件的顶层 HWND。
 
@@ -389,12 +401,16 @@ def top_hwnd(widget) -> int:
     """
     h = int(widget.winfo_id())
     seen: set[int] = set()
+    desktop = int(user32.GetDesktopWindow())
     while h and h not in seen:
         seen.add(h)
-        parent = user32.GetParent(ctypes.c_void_p(h))
-        if not parent:
+        # 必须用 GA_PARENT：对顶层窗口 GetParent() 会返回 *owner*，
+        # 一旦这个窗口被 set_owner 挂到别的程序上，GetParent 就会跳到对方窗口去。
+        parent = user32.GetAncestor(ctypes.c_void_p(h), GA_PARENT)
+        parent = int(parent or 0)
+        if not parent or parent == desktop or parent == h:
             break
-        h = int(parent)
+        h = parent
     return h
 
 
@@ -529,6 +545,118 @@ def pid_of(hwnd: int) -> int:
         return int(pid.value)
     except Exception:
         return 0
+
+
+def set_owner(hwnd: int, owner: int) -> bool:
+    """把窗口挂到另一个窗口名下（owned window）。
+
+    为什么这么做：用户抱怨「一点游戏，中文就被盖住了」。原因是置顶窗口之间仍有先后，
+    游戏一激活就把自己提到队首。而 **owned window 永远排在它的 owner 之上**——
+    这是窗口管理器保证的，不需要反复重提置顶，也不抢焦点。
+    实测（probe_owner.py）：无 owner 时被游戏激活后覆盖层可见比例 0.000，
+    设 owner 后同样是 0.107（一直可见）。
+    """
+    if not hwnd:
+        return False
+    try:
+        GWLP_HWNDPARENT = -8
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                             ctypes.c_void_p]
+        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+        user32.SetWindowLongPtrW(ctypes.c_void_p(int(hwnd)), GWLP_HWNDPARENT,
+                                 ctypes.c_void_p(int(owner or 0)))
+        return owner_of(hwnd) == int(owner)
+    except Exception:
+        return False
+
+
+def owner_of(hwnd: int) -> int:
+    """窗口的 owner（没有则 0）。"""
+    if not hwnd:
+        return 0
+    try:
+        GWLP_HWNDPARENT = -8
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_void_p
+        val = user32.GetWindowLongPtrW(ctypes.c_void_p(int(hwnd)), GWLP_HWNDPARENT)
+        return int(val or 0)
+    except Exception:
+        return 0
+
+
+def client_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """窗口客户区在屏幕上的 (x, y, w, h)——内嵌定位就按这个坐标系算。"""
+    if not hwnd:
+        return None
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", wt.LONG), ("top", wt.LONG),
+                    ("right", wt.LONG), ("bottom", wt.LONG)]
+    r = RECT()
+    if not user32.GetClientRect(ctypes.c_void_p(int(hwnd)), ctypes.byref(r)):
+        return None
+    w = int(r.right - r.left)
+    h = int(r.bottom - r.top)
+    point = wt.POINT(0, 0)
+    if not user32.ClientToScreen(ctypes.c_void_p(int(hwnd)), ctypes.byref(point)):
+        return None
+    return (int(point.x), int(point.y), w, h)
+
+
+def is_minimized(hwnd: int) -> bool:
+    """窗口是否最小化（游戏最小化时覆盖层也该跟着藏起来）。"""
+    if not hwnd:
+        return False
+    try:
+        return bool(user32.IsIconic(ctypes.c_void_p(int(hwnd))))
+    except Exception:
+        return False
+
+
+def is_window(hwnd: int) -> bool:
+    """句柄还是不是一个有效窗口（游戏关掉后句柄会失效）。"""
+    if not hwnd:
+        return False
+    try:
+        return bool(user32.IsWindow(ctypes.c_void_p(int(hwnd))))
+    except Exception:
+        return False
+
+
+def windows_containing(x: int, y: int, w: int, h: int,
+                       exclude_pid: int = 0) -> list[int]:
+    """所有「能完整装下这块矩形」的可见顶层窗口，按面积从小到大。
+
+    为什么不用 WindowFromPoint：覆盖层自己就盖在识别区上，点到的是我们自己。
+    这里改成纯几何匹配——谁的窗口范围装得下这块区域，谁就是候选宿主；
+    面积最小的那个通常就是游戏窗口（而不是全屏的浏览器/桌面）。
+    """
+    out: list[tuple[int, int]] = []
+    pid_self = int(exclude_pid or 0)
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _lp):
+        if not user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            return True
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == pid_self:
+            return True
+        rect = window_rect(int(hwnd))
+        if not rect:
+            return True
+        x1, y1, x2, y2 = rect
+        if x1 <= x and y1 <= y and x2 >= x + w and y2 >= y + h:
+            out.append(((x2 - x1) * (y2 - y1), int(hwnd)))
+        return True
+
+    if not user32.EnumWindows.argtypes:
+        user32.EnumWindows.argtypes = [ctypes.c_void_p, wt.LPARAM]
+    try:
+        user32.EnumWindows(cb, 0)
+    except Exception:
+        return []
+    out.sort()
+    return [hwnd for _area, hwnd in out]
 
 
 def window_at(x: int, y: int) -> int:

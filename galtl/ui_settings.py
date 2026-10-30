@@ -402,6 +402,13 @@ class SettingsDialog:
         ttk.Checkbutton(cap, text="启动时自动开启覆盖原文",
                         variable=self._var("cover_mode", "bool")).grid(
             row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        ttk.Checkbutton(cap, text="内嵌到游戏窗口（中文永远在游戏上面，跟随游戏移动/最小化）",
+                        variable=self._var("cover_embed", "bool")).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+        ttk.Label(cap, text="内嵌后覆盖层属于游戏窗口：点游戏不会被盖住，拖走游戏中文跟着走，"
+                            "游戏最小化时一起收起。独占全屏仍然无解（Windows 不允许任何窗口盖上去）。",
+                  wraplength=520, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
 
     def _tab_misc(self, nb):
         f = ttk.Frame(nb)
