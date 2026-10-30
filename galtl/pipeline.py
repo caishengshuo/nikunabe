@@ -23,9 +23,9 @@ from .config import Config
 from .ocr import OcrUnavailable, make_ocr, merge_lines
 from .store import Store
 from .textutil import (
-    canon_punct, dedupe_key, display_join, has_japanese, is_meta_reply, is_meaningful,
-    is_punct_only, is_single_kana, looks_japanese, looks_like_ui_noise, normalize,
-    pick_dialogue_line, similar_key, strip_nameplate,
+    canon_punct, dedupe_key, display_join, fix_sentence_type, has_japanese,
+    is_meta_reply, is_meaningful, is_punct_only, is_single_kana, looks_japanese,
+    looks_like_ui_noise, normalize, pick_dialogue_line, similar_key, strip_nameplate,
     stable_key,
 )
 
@@ -167,7 +167,7 @@ class Engine:
     def _translate_with_ms(self, jp_text: str, t0: float) -> dict:
         """微软翻译路线：一次请求拿一条译文；语法/生词用本地库补（不花 token）。"""
         zh = msmt.translate(jp_text, **self.ms_kwargs())
-        zh = _one_line((zh or "").strip())
+        zh = fix_sentence_type(jp_text, _one_line((zh or "").strip()))
         self.stats["llm"] += 1
         elapsed = round((time.perf_counter() - t0) * 1000, 1)
         self.emit("partial", {"jp": jp_text, "zh": zh, "ms": elapsed, "seq": self._seq})
@@ -443,7 +443,7 @@ class Engine:
                     self.store.delete(jp_text)
                     hit = None
                 else:
-                    hit["zh"] = _one_line(hit.get("zh") or "")
+                    hit["zh"] = fix_sentence_type(jp_text, _one_line(hit.get("zh") or ""))
                     self.stats["cache"] += 1
                     hit["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
                                    "cached": True, "engine": "cache"}
@@ -463,7 +463,7 @@ class Engine:
             if reuse:
                 reuse = dict(reuse)
                 reuse.pop("similar_key", None)
-                reuse["zh"] = _one_line(reuse.get("zh") or "")
+                reuse["zh"] = fix_sentence_type(jp_text, _one_line(reuse.get("zh") or ""))
                 reuse["meta"] = {"ms": round((time.perf_counter() - t0) * 1000, 1),
                                  "cached": True, "engine": "cache:similar"}
                 self.stats["cache"] += 1
@@ -641,7 +641,7 @@ class Engine:
             ).strip()
             first_ms = (time.perf_counter() - t0) * 1000.0
 
-        zh = _one_line(zh)
+        zh = fix_sentence_type(jp_text, _one_line(zh))
         if not zh:
             # 流式没吐内容（个别网关不支持 stream）→ 退回原来的一次性解析
             log.warning("流式译文为空，回退到整段解析")

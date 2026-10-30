@@ -373,3 +373,89 @@ def pick_dialogue_line(text: str) -> str:
     keep = [ln for ln in lines if keep_line(ln)]
     return "\n".join(keep).strip()
 
+
+# ---------- 句式兜底：陈述句不许长出问号 ----------
+# 实测：游戏里明明是「ここは京都。」（陈述），模型偶尔会译成「这里是京都吗？」。
+# 提示词里已经写了「句末标点与原文一致」，但模型不是确定性的，所以再加一道
+# 机械兜底：只有当**中文带着是非问语气词**、而**日文根本不是疑问句**时才动手，
+# 不碰「为什么…？」这类日文没有 か 但确实是问句的情况。
+_Q_TAIL_MARK_RE = re.compile(r"[？?]\s*$")
+# 句末能被当作疑问的形态：か／かしら／かな／かい／だい／っけ／の（口语省略问号）
+_Q_PARTICLE_RE = re.compile(r"(?:か|かしら|かな|かい|だい|っけ|の)\s*[。．.!！…‥♪♬\s]*$")
+_TAIL_STRIP_RE = re.compile(r"[。．.!！…‥、\s」』）)]+$")
+# 是非问语气词（在中文里几乎只由疑问句使用）。
+# 「么／麼」不列进来：它大量出现在「为什么／怎么／这么／什么」里，
+# 早期版本把它当句末语气词，结果「为什么去？」被削成「为什去。」。
+_YESNO_WORDS = ("吗", "嗎")
+# 明明以 か 结尾、却不表示疑问的固定说法（「そうか」= 这样啊／是吗，多为应声）
+_NOT_QUESTION_TAILS = ("そうか", "そっか", "そうですか", "なるほど")
+# 中文里带「吗」却仍是陈述/反问的固定说法：这时候不许删
+# （「……そうか。」正确译文就是「……是吗。」，早期版本被削成「……是。」）
+_KEEP_WITH_MA = ("是吗", "是嗎", "不是吗", "不是嗎", "难道", "難道", "岂不", "豈不")
+# 中文自身的疑问词：出现这些时，即使日文没有 か 也可能是真问句，别动它
+_ZH_Q_WORDS = (
+    "为什么", "為何", "为何", "怎么", "怎樣", "怎样", "什么", "什麼", "哪儿", "哪兒",
+    "哪里", "哪裡", "谁", "誰", "难道", "難道", "多少", "几", "幾", "何时", "何時",
+    "如何", "是否", "可否", "要不要", "是不是", "有没有", "有沒有",
+)
+
+
+def is_question_jp(text: str) -> bool:
+    """日文这句是不是疑问句（看句末问号 / 句末疑问助词）。"""
+    s = (text or "").strip()
+    if not s:
+        return False
+    if _Q_TAIL_MARK_RE.search(s):
+        return True
+    core = _TAIL_STRIP_RE.sub("", s)
+    if not _Q_PARTICLE_RE.search(s):
+        return False
+    # 有问号以外，还要排掉「……そうか。」这种以 か 收尾的应声/感叹
+    return not core.endswith(_NOT_QUESTION_TAILS)
+
+
+def fix_sentence_type(jp: str, zh: str) -> str:
+    """让中文的句式跟日文一致：陈述句不出现「吗…？」，疑问句补上问号。
+
+    只做两件保守的事：
+      * 日文不是疑问句、中文却以「吗／嗎／么／麼」结尾（可带 ？）→ 去掉那个语气词，
+        并把句末问号换成句号；
+      * 日文是疑问句、中文没有问号 → 补一个「？」。
+    其余一律原样返回——宁可不动，也不要改坏「为什么…？」这种真问句。
+    """
+    z = (zh or "").strip()
+    if not z:
+        return z
+    jq = is_question_jp(jp)
+    z_tail = z[-8:]
+    has_yesno = any(w in z_tail for w in _YESNO_WORDS)
+
+    if not jq and has_yesno:
+        if any(w in z for w in _KEEP_WITH_MA):
+            # 「是吗／不是吗」这类反问/应声，删掉就成了病句
+            return z
+        t = z
+        for w in _YESNO_WORDS:
+            if w in t[-8:]:
+                # 只掐最后一个语气词，保留它前面的标点结构
+                idx = t.rfind(w)
+                before, after = t[:idx], t[idx + 1:]
+                after = after.replace("？", "").replace("?", "").strip()
+                t = before.rstrip("，,、 ") + after
+                break
+        t = _Q_TAIL_MARK_RE.sub("。", t)
+        if not re.search(r"[。．.!！…‥」』）)]$", t):
+            t = t + "。"
+        return t.strip()
+
+    if not jq and _Q_TAIL_MARK_RE.search(z):
+        # 没有「吗」但带问号：中文里若没有自己的疑问词才敢改成句号
+        # （「为什么…？」这种必须留着，日文省略 か 也能是问句）
+        if not any(w in z for w in _ZH_Q_WORDS):
+            return _Q_TAIL_MARK_RE.sub("。", z).strip()
+
+    # 反方向（日文是疑问句、中文没问号）**故意不补**：OCR 截断的行常以
+    # 「か」结尾（「…伝えていなか」其实是「なかった」被打断），补问号会把
+    # 陈述句写坏。模型对真疑问句本来就都会带问号，这里只做减法。
+    return z
+

@@ -1,4 +1,4 @@
-﻿"""延迟体检：把「从字幕出现到看到中文」拆成每一段，逐段计时。
+"""延迟体检：把「从字幕出现到看到中文」拆成每一段，逐段计时。
 
 用法：python latency_check.py            （用 config.json 里的真实 key / 区域）
       python latency_check.py --no-llm   （只测本地：指纹 + OCR）
@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import argparse
 import statistics
+import tempfile
 import time
+
+from pathlib import Path
 
 from galtl import llm
 from galtl.config import Config
@@ -85,7 +88,8 @@ def main() -> int:
 
     jp = text if any(ord(c) > 0x3000 for c in text) else SAMPLE
     kwargs = cfg.llm_kwargs()
-    eng = Engine(cfg, Store(cfg.data), __import__("queue").Queue())
+    eng = Engine(cfg, Store(str(Path(tempfile.mkdtemp(prefix="lat_")) / "c.db")),
+                 __import__("queue").Queue())
 
     # 3) 旧路径：一次调用出 JSON（译文 + 语法）
     print("-" * 62)
