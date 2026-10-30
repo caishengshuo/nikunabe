@@ -1,11 +1,12 @@
 """设置窗口：模型 / 抓取 / 显示 / 缓存与热键。"""
 from __future__ import annotations
 
+import os
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from . import llm
+from . import llm, winapi
 
 
 class SettingsDialog:
@@ -335,6 +336,24 @@ class SettingsDialog:
         ttk.Button(f, text="清空区域", command=self._clear_region).grid(
             row=8, column=1, sticky="w", pady=10)
 
+        # ---- 识别目标程序：不用手框，直接选正在运行的游戏 ----
+        box = ttk.LabelFrame(f, text="识别目标程序（选好后自动跟住整个游戏窗口）")
+        box.grid(row=9, column=0, columnspan=3, sticky="we", padx=8, pady=(16, 10))
+        box.columnconfigure(0, weight=1)
+        self._targets: list[dict] = []
+        self._target_cb = ttk.Combobox(box, state="readonly", width=52)
+        self._target_cb.grid(row=0, column=0, sticky="we", padx=(10, 6), pady=6)
+        ttk.Button(box, text="刷新列表", command=self._refresh_targets).grid(
+            row=0, column=1, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(
+            box,
+            text="选定后每轮按进程找窗口、取它的整个客户区来抓字：游戏移动、换分辨率、"
+                 "重启都不用重新框选，中文覆盖层也会跟着嵌进这个窗口。\n"
+                 "主界面按 F7 手框区域会清除这个设定。",
+            foreground="#7a8494", wraplength=560, justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        self._refresh_targets()
+
     def _tab_display(self, nb):
         f = ttk.Frame(nb)
         nb.add(f, text="显示")
@@ -455,6 +474,66 @@ class SettingsDialog:
         self.cfg.set("region", [0, 0, 0, 0])
         self._lbl_region.configure(text="[0, 0, 0, 0]")
 
+    # ---------- 识别目标程序 ----------
+    def _target_labels(self) -> list[str]:
+        """下拉框文字。第 0 项永远是「不指定」，其余与 self._targets 一一对应。"""
+        out = ["（不指定：用主界面框选的区域）"]
+        for t in self._targets:
+            w, h = (t.get("client") or (0, 0, 0, 0))[2:4]
+            size = f"{w}x{h}" if not t.get("missing") else "未运行"
+            out.append(f"{t.get('title') or '(无标题)'} · {t.get('exe') or '?'} · {size}")
+        return out
+
+    def _refresh_targets(self) -> None:
+        """重新枚举「可以当识别目标」的窗口，并保住当前选择。"""
+        keep = self._selected_target_pid()
+        items: list[dict] = []
+        try:
+            items = winapi.list_targets(exclude_pids=[os.getpid()])
+        except Exception:
+            log.debug("枚举识别目标失败", exc_info=True)
+        pid_saved = int(self.cfg.get("target_pid", 0) or 0)
+        if pid_saved and not any(t["pid"] == pid_saved for t in items):
+            # 上次选的程序现在没开着：留一条占位，别让用户以为设置丢了
+            items.insert(0, {
+                "pid": pid_saved,
+                "exe": self.cfg.get("target_exe", ""),
+                "title": self.cfg.get("target_title", ""),
+                "client": (0, 0, 0, 0),
+                "missing": True,
+            })
+        self._targets = items
+        labels = self._target_labels()
+        self._target_cb.configure(values=labels)
+        idx = 0
+        want = keep or pid_saved
+        if want:
+            for i, t in enumerate(self._targets, start=1):
+                if int(t["pid"]) == int(want):
+                    idx = i
+                    break
+        self._target_cb.current(idx)
+
+    def _selected_target_pid(self) -> int:
+        try:
+            i = int(self._target_cb.current())
+        except Exception:
+            return 0
+        if i <= 0 or i - 1 >= len(self._targets):
+            return 0
+        return int(self._targets[i - 1].get("pid") or 0)
+
+    def _target_patch(self) -> dict:
+        pid = self._selected_target_pid()
+        if not pid:
+            return {"target_pid": 0, "target_exe": "", "target_title": ""}
+        t = next((x for x in self._targets if int(x.get("pid") or 0) == pid), {})
+        return {
+            "target_pid": pid,
+            "target_exe": t.get("exe", "") or "",
+            "target_title": t.get("title", "") or "",
+        }
+
     def _on_provider(self, idx: int):
         key = self._provider_keys[idx]
         p = llm.PROVIDERS[key]
@@ -506,6 +585,8 @@ class SettingsDialog:
         if getattr(self, "_capture_cb", None) is not None:
             idx = self._capture_cb.current()
             patch["cover_capture"] = {0: "exclude", 1: "record", 2: "off"}.get(idx, "exclude")
+        if getattr(self, "_target_cb", None) is not None:
+            patch.update(self._target_patch())
         self.cfg.update(patch)
         self.cfg.save()
         if self.on_saved:

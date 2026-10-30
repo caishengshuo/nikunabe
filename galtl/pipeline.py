@@ -210,6 +210,15 @@ class Engine:
         窗口之后，前台不是它就直接不抓。
         """
         x, y, w, h = rect or self.cfg.region
+        pid = int(self.cfg.get("target_pid", 0) or 0)
+        if pid:
+            # 已经选了「识别目标程序」：前台判断用那个进程，别去猜坐标属于谁
+            hwnd = self.target_hwnd()
+            if hwnd:
+                self._game_hwnd = int(hwnd)
+                log.info("识别目标：pid=%s 窗口 hwnd=%s（客户端 %s）",
+                         pid, self._game_hwnd, winapi.client_rect(hwnd))
+            return
         if hwnd is None:
             try:
                 hwnd = winapi.window_at(int(x + w // 2), int(y + h // 2))
@@ -248,7 +257,38 @@ class Engine:
         return (x1, y1, x2, y2)
 
     def _capture_region(self) -> tuple[int, int, int, int]:
-        """抓取区域（悬浮窗重叠部分由 _exclude_rect 涂黑）。"""
+        """抓取区域（悬浮窗重叠部分由 _exclude_rect 涂黑）。
+
+        优先用「设置里选中的程序」：按 pid 找它的窗口、取整个客户区。这样游戏
+        移动、换分辨率、重启都不用重新框选；找不到窗口才退回手框的 region。
+        """
+        return self.target_rect()
+
+    def target_hwnd(self) -> int:
+        """当前识别目标窗口句柄（0 = 没指定或窗口已不在）。"""
+        pid = int(self.cfg.get("target_pid", 0) or 0)
+        if not pid:
+            return 0
+        try:
+            hwnd = winapi.hwnd_for_pid(pid)
+        except Exception:
+            hwnd = 0
+        if hwnd:
+            self._game_hwnd = int(hwnd)
+        return int(hwnd or 0)
+
+    def target_rect(self) -> tuple[int, int, int, int]:
+        """这一轮该抓哪块屏幕。选了目标程序就跟它的客户区走。"""
+        hwnd = self.target_hwnd()
+        if hwnd:
+            rect = winapi.client_rect(hwnd)
+            if rect:
+                x, y, w, h = (int(v) for v in rect)
+                inset = int(self.cfg.get("target_inset", 0) or 0)
+                if inset > 0 and w > inset * 4 and h > inset * 4:
+                    x, y, w, h = x + inset, y + inset, w - inset * 2, h - inset * 2
+                if w >= 64 and h >= 48:
+                    return (x, y, w, h)
         return tuple(self.cfg.region)
 
     def _exclude_rect(self, x: int, y: int, w: int, h: int):
@@ -1085,7 +1125,7 @@ class Engine:
             if not jp_text:
                 return None
         elif mode == "vision":
-            x, y, w, h = self.cfg.region
+            x, y, w, h = self._capture_region()
             if w < 8 or h < 8:
                 raise RuntimeError("尚未框选字幕区域")
             png, _, _ = winapi.grab_png(

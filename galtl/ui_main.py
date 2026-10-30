@@ -60,7 +60,7 @@ class MainWindow:
         self.engine.cover = self.cover
         self._last_zh = ""          # 最近一次译文：换区域/开关覆盖时用来立刻重画
         self._shown_seq = 0         # 已经上屏的句子号：比它旧的流式增量直接丢（防两句译文闪动）
-        self.cover.set_rect(self.cfg.region)
+        self.cover.set_rect(self.engine.target_rect())
         if self.cfg.region[2] >= 8:
             self.engine.set_region(self.cfg.region)
         if self.cfg.get("cover_mode"):
@@ -209,6 +209,10 @@ class MainWindow:
 
     # ---------- 辅助 ----------
     def _region_text(self) -> str:
+        pid = int(self.cfg.get("target_pid", 0) or 0)
+        if pid:
+            name = self.cfg.get("target_exe") or self.cfg.get("target_title") or f"pid {pid}"
+            return f"跟随程序：{name}"
         x, y, w, h = self.cfg.region
         if w < 8 or h < 8:
             return "未框选区域"
@@ -278,9 +282,14 @@ class MainWindow:
             self.root.deiconify()
         if rect:
             self.cfg.set("region", list(rect))
+            # 手动框选即「我就要这块」：清掉之前选的识别目标程序，否则每轮
+            # target_rect() 又会按进程取整个客户区，手框等于白框。
+            self.cfg.set("target_pid", 0)
+            self.cfg.set("target_exe", "")
+            self.cfg.set("target_title", "")
             self.cfg.save()
             self.lbl_region.configure(text=self._region_text())
-            self.cover.set_rect(self.cfg.region)
+            self.cover.set_rect(self.engine.target_rect())
             self.engine.set_region(self.cfg.region)   # 记下这块像素属于哪个窗口
             if self.cover.visible and self._last_zh:
                 self.cover.show(self._last_zh)
@@ -494,6 +503,19 @@ class MainWindow:
             self.cover.set_embed(bool(self.cfg.get("cover_embed", True)))
         except Exception:
             pass
+        # 识别目标程序可能换了：重认一次窗口，并让覆盖层绑到新的那一个
+        try:
+            self.engine.set_region()
+            self.cover.set_rect(self.engine.target_rect())
+            if self.cover.visible:
+                self.cover.detect_game()
+                self.cover.bind_game()
+        except Exception:
+            log.debug("切换识别目标后重绑失败", exc_info=True)
+        if int(self.cfg.get("target_pid", 0) or 0):
+            self.lbl_region.configure(text="跟随程序窗口")
+            self.set_status(f"已跟随程序：{self.cfg.get('target_exe') or self.cfg.get('target_title')}")
+            self.translate_now()
         self.set_status("设置已应用")
 
     # ---------- 事件循环 ----------

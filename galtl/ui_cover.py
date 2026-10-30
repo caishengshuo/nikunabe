@@ -166,13 +166,23 @@ class CoverWindow:
 
     # ---------- 内嵌（绑定游戏窗口） ----------
     def detect_game(self) -> int:
-        """认出该内嵌到哪个窗口：按「谁的窗口装得下这块识别区」做几何匹配。
+        """认出该内嵌到哪个窗口：设置了「识别目标程序」就认那个进程，否则几何匹配。
 
         注意不能只用 WindowFromPoint——覆盖层自己就压在识别区上，点到的是自己；
         也不能只信前台窗口，玩家刚点过浏览器时前台是浏览器。
         """
         mine = self._hwnd
         my_pid = winapi.pid_of(mine)
+        # 1) 设置的识别目标优先：选了程序就等于明说要盖在那个窗口里
+        if self._embed:
+            try:
+                pid = int(self.cfg.get("target_pid", 0) or 0)
+            except Exception:
+                pid = 0
+            if pid:
+                hwnd = winapi.hwnd_for_pid(pid)
+                if hwnd and hwnd != mine and winapi.pid_of(hwnd) != my_pid:
+                    return hwnd
         if self._rect:
             x, y, w, h = self._rect
             for cand in winapi.windows_containing(x, y, w, h, exclude_pid=my_pid):

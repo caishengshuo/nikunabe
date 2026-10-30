@@ -622,6 +622,164 @@ def is_window(hwnd: int) -> bool:
         return False
 
 
+def process_name(pid: int) -> str:
+    """进程的映像文件名（如 ``SenrenBanka.exe``）；取不到返回空串。
+
+    设置里要列出「正在运行的程序」，窗口标题常常是游戏的日文名，而进程名
+    （``SenrenBanka.exe``）对用户更好认，也方便跨语言认出同一个游戏。
+    """
+    if not pid:
+        return ""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, wt.DWORD, ctypes.c_wchar_p, ctypes.POINTER(wt.DWORD)
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = wt.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return ""
+        try:
+            size = wt.DWORD(1024)
+            buf = ctypes.create_unicode_buffer(1024)
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return (buf.value or "").replace("/", "\\").split("\\")[-1]
+            return ""
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return ""
+
+
+def _window_title(hwnd: int) -> str:
+    try:
+        n = int(user32.GetWindowTextLengthW(ctypes.c_void_p(int(hwnd))))
+        if n <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(ctypes.c_void_p(int(hwnd)), buf, n + 1)
+        return (buf.value or "").strip()
+    except Exception:
+        return ""
+
+
+# 这些进程的窗口永远不可能是「要翻译的游戏」，出现在选择列表里只会干扰
+_SYSTEM_EXES = {
+    "textinputhost.exe", "applicationframehost.exe", "systemsettings.exe",
+    "shellexperiencehost.exe", "startmenuexperiencehost.exe", "searchhost.exe",
+    "searchapp.exe", "lockapp.exe", "taskmgr.exe", "sihost.exe",
+}
+
+
+def _is_tool_window(hwnd: int) -> bool:
+    """WS_EX_TOOLWINDOW（输入法候选框、托盘图标那类）不该出现在选择列表里。"""
+    try:
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        style = int(user32.GetWindowLongW(ctypes.c_void_p(int(hwnd)), GWL_EXSTYLE))
+        return bool(style & WS_EX_TOOLWINDOW)
+    except Exception:
+        return False
+
+
+def _enumerate_visible() -> list[int]:
+    out: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _lp):
+        if user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            out.append(int(hwnd))
+        return True
+
+    if not user32.EnumWindows.argtypes:
+        user32.EnumWindows.argtypes = [ctypes.c_void_p, wt.LPARAM]
+    try:
+        user32.EnumWindows(cb, 0)
+    except Exception:
+        return []
+    return out
+
+
+def list_targets(exclude_pids=(), min_w: int = 320, min_h: int = 180,
+                 skip_system: bool = True) -> list[dict]:
+    """列出「可以当识别目标」的窗口，按面积从大到小。
+
+    每项：``{hwnd, pid, exe, title, client, area}``；``client`` 是客户区的
+    屏幕矩形 ``(x, y, w, h)``——抓字就是按它截的，不含标题栏和边框。
+
+    过滤规则（都是为了把真正能玩的窗口筛出来）：
+      * 可见、有标题文字、不是 WS_EX_TOOLWINDOW；
+      * 客户区至少 ``min_w × min_h``（对话框都装不下的碎窗没意义）；
+      * 同一进程只留最大的那个（游戏常有启动器小窗 + 主窗）；
+      * 排除自己（``exclude_pids`` 里传本进程 pid）。
+    """
+    skip = {int(p) for p in exclude_pids if p}
+    best: dict[int, dict] = {}
+    for hwnd in _enumerate_visible():
+        if _is_tool_window(hwnd):
+            continue
+        title = _window_title(hwnd)
+        if not title:
+            continue
+        pid = pid_of(hwnd)
+        if not pid or pid in skip:
+            continue
+        rect = client_rect(hwnd)
+        if not rect:
+            continue
+        _x, _y, w, h = rect
+        if w < min_w or h < min_h:
+            continue
+        exe = process_name(pid)
+        if skip_system and exe.lower() in _SYSTEM_EXES:
+            continue
+        item = {
+            "hwnd": hwnd,
+            "pid": pid,
+            "exe": exe,
+            "title": title,
+            "client": rect,
+            "area": int(w) * int(h),
+        }
+        old = best.get(pid)
+        if old is None or item["area"] > old["area"]:
+            best[pid] = item
+    return sorted(best.values(), key=lambda d: (-d["area"], d["title"]))
+
+
+def hwnd_for_pid(pid: int, min_w: int = 240, min_h: int = 140) -> int:
+    """某进程当前的主窗口（可见、面积最大）；进程没窗口时返回 0。
+
+    识别目标按 **pid** 存，而不是存 hwnd：游戏重启后句柄会变，pid 也可能变，
+    但 pid 一致时用它重新找窗口就能立刻对上（覆盖层跟随也靠它）。
+    """
+    pid = int(pid or 0)
+    if not pid:
+        return 0
+    best_hwnd = 0
+    best_area = 0
+    for hwnd in _enumerate_visible():
+        if pid_of(hwnd) != pid or _is_tool_window(hwnd):
+            continue
+        rect = client_rect(hwnd)
+        if not rect:
+            continue
+        _x, _y, w, h = rect
+        if w < min_w or h < min_h:
+            continue
+        area = int(w) * int(h)
+        if area > best_area:
+            best_area = area
+            best_hwnd = hwnd
+    return best_hwnd
+
+
 def windows_containing(x: int, y: int, w: int, h: int,
                        exclude_pid: int = 0) -> list[int]:
     """所有「能完整装下这块矩形」的可见顶层窗口，按面积从小到大。
